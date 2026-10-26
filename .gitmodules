@@ -1,0 +1,3 @@
+[submodule "vendor/preloader-android"]
+	path = vendor/preloader-android
+	url = https://github.com/LiteLDev/preloader-android.git

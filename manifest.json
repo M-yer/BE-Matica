@@ -1,0 +1,8 @@
+{
+  "type": "preload-native",
+  "name": "BE-Matica",
+  "author": "BE-Matica contributors",
+  "version": "0.1.0",
+  "description": "Open-source Litematica-style schematic preview for Minecraft Bedrock on Android (LeviLaunchroid).",
+  "entry": "libBEMatica.so"
+}
