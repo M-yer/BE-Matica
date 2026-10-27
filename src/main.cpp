@@ -221,15 +221,17 @@ private:
 
     if (!loadedName_.empty()) {
       size_t total = 0;
-      std::string list;
-      for (const auto &m : materials_) {
-        total += m.count;
-        list += std::to_string(m.count) + "  " + m.name + "\n";
-      }
-      if (!list.empty()) list.pop_back();
+      for (const auto &m : materials_) total += m.count;
       schema.node(N{.id = "materials", .category = "main",
                     .title = loadedName_ + "  (" + sizeText(loaded_) + ", " + std::to_string(total) + " blocks)",
-                    .description = list, .section = "Materials", .type = T::Info});
+                    .section = "Materials", .type = T::Info});
+      // One row per block: the launcher caps a single description at 1024 characters, and it stays under
+      // its 512-node limit with room for the controls above.
+      constexpr size_t kMaxRows = 400;
+      for (size_t k = 0; k < materials_.size() && k < kMaxRows; ++k)
+        schema.node(N{.id = "m" + std::to_string(k), .category = "main",
+                      .title = std::to_string(materials_[k].count) + "   " + materials_[k].name, .section = "Materials",
+                      .type = T::Info});
     }
 
     publishing_ = true;
