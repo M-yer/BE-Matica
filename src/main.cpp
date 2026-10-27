@@ -73,7 +73,10 @@ public:
     const auto surface = mm::getHudSurfaceSize();
     ctx.logger().info("BE-Matica: HUD surface {}x{}", surface.width, surface.height);
 
+    loadSettings();
     hologram::setOpacity(opacity_ / 100.0f);
+    hologram::setVisible(hologramOn_);
+    easyplace::setEnabled(easyPlaceOn_);
     easyplace::installAsync(
         ctx.logger(), [this](const std::string &text) { panel_.toast(text); },
         [this] {
@@ -137,12 +140,15 @@ private:
       status_ = files_.empty() ? "No structures yet" : std::to_string(files_.size()) + " structures found";
     } else if (key == "overlay") {
       overlay_ = value == "true" || value == "1";
+      saveSettingsLocked();
     } else if (key == "hologram") {
       hologramOn_ = value == "true" || value == "1";
       hologram::setVisible(enabled_ && hologramOn_);
+      saveSettingsLocked();
     } else if (key == "easyplace") {
       easyPlaceOn_ = value == "true" || value == "1";
       easyplace::setEnabled(easyPlaceOn_);
+      saveSettingsLocked();
       return;
     } else if (key == "move") {
       hologram::moveToPlayer();
@@ -152,6 +158,7 @@ private:
     } else if (key == "opacity") {
       opacity_ = std::clamp(std::atoi(std::string(value).c_str()), 10, 100);
       hologram::setOpacity(opacity_ / 100.0f);
+      saveSettingsLocked();
       return;  // no page change needed while the slider is dragged
     } else {
       return;
@@ -260,6 +267,7 @@ private:
     using T = mm::ConfigControlTypeV2;
     mm::ConfigSchemaBuilder schema;
     schema.category("main", "BE-Matica").defaultCategory("main");
+    if (hologramOk_ && easyPlaceOk_) schema.category("easyplace", "Easy Place");
     if (!loadedName_.empty()) {
       if (hologramOk_) schema.category("place", "Placement & Layers");
       schema.category("materials", "Materials");
@@ -276,25 +284,35 @@ private:
 
     if (hologramOk_) {
       schema.node(N{.id = "hologram", .key = "hologram", .category = "main", .title = "Show hologram",
-                    .type = T::Toggle, .defaultValue = "true"});
-      // Toggles and sliders don't send a current value: the launcher keeps the user's saved choice and
-      // replays it through onConfigChanged, where sending our default would overwrite it.
-      if (easyPlaceOk_)
-        schema.node(N{.id = "easyplace", .key = "easyplace", .category = "main", .title = "Easy Place",
+                    .type = T::Toggle, .defaultValue = "true", .currentValue = hologramOn_ ? "true" : "false",
+                    .hasCurrentValue = true});
+      if (easyPlaceOk_) {
+        schema.node(N{.id = "easyplace", .key = "easyplace", .category = "easyplace", .title = "Easy Place",
                       .description = "Tap where a ghost block is to place it there. Only the right block is "
                                      "placed: hold it in your hand.",
-                      .type = T::Toggle, .defaultValue = "false"});
+                      .type = T::Toggle, .defaultValue = "false", .currentValue = easyPlaceOn_ ? "true" : "false",
+                      .hasCurrentValue = true});
+        schema.node(N{.id = "easyplace_help", .category = "easyplace", .title = "How it works",
+                      .description = "Aim at a ghost block, or through it at the ground behind, and tap to place. "
+                                     "Taps outside the hologram place blocks normally.\n"
+                                     "Holding the wrong block shows which one to hold instead.\n"
+                                     "With Placement & Layers set to One layer, the next layer starts by itself "
+                                     "when one is finished.",
+                      .type = T::Info});
+      }
       schema.node(N{.id = "move", .key = "move", .category = "main", .title = "Move hologram to me",
                     .description = "Puts the structure's corner where you stand.", .type = T::Button});
       schema.node(N{.id = "opacity", .key = "opacity", .category = "main", .title = "Hologram opacity",
-                    .type = T::SliderInt, .defaultValue = "45", .minValue = "10", .maxValue = "100", .step = "5", .unit = "%"});
+                    .type = T::SliderInt, .defaultValue = "45", .currentValue = std::to_string(opacity_),
+                    .hasCurrentValue = true, .minValue = "10", .maxValue = "100", .step = "5", .unit = "%"});
       if (!loadedName_.empty()) addPlacementNodes(schema);
     }
     schema.node(N{.id = "refresh", .key = "refresh", .category = "main", .title = "Refresh list",
                   .description = "Rescan " + structuresDir_.string().substr(8), .type = T::Button});
     schema.node(N{.id = "overlay", .key = "overlay", .category = "main", .title = "Blocks button on screen",
                   .description = "Opens a scrollable block list while you build. Tap a block to tick it off.",
-                  .type = T::Toggle, .defaultValue = "false"});
+                  .type = T::Toggle, .defaultValue = "false", .currentValue = overlay_ ? "true" : "false",
+                  .hasCurrentValue = true});
     if (!status_.empty())
       schema.node(N{.id = "status", .category = "main", .title = status_, .type = T::Info});
 
@@ -347,6 +365,24 @@ private:
                   .section = "Layers", .type = T::Button});
     schema.node(N{.id = "layer_down", .key = "layer_down", .category = "place", .title = "Layer down",
                   .section = "Layers", .type = T::Button});
+  }
+
+  // The launcher doesn't restore toggle values between launches, so BE-Matica keeps its own.
+  fs::path settingsFile() const { return structuresDir_.parent_path() / "settings.txt"; }
+
+  void loadSettings() {
+    std::ifstream in(settingsFile());
+    for (std::string key, value; std::getline(in, key, '=') && std::getline(in, value);) {
+      if (key == "easyplace") easyPlaceOn_ = value == "1";
+      else if (key == "hologram") hologramOn_ = value == "1";
+      else if (key == "overlay") overlay_ = value == "1";
+      else if (key == "opacity") opacity_ = std::clamp(std::atoi(value.c_str()), 10, 100);
+    }
+  }
+
+  void saveSettingsLocked() {
+    std::ofstream(settingsFile()) << "easyplace=" << easyPlaceOn_ << "\nhologram=" << hologramOn_
+                                  << "\noverlay=" << overlay_ << "\nopacity=" << opacity_ << "\n";
   }
 
   void syncPanelLocked() { panel_.setVisible(enabled_ && overlay_ && !loadedName_.empty()); }

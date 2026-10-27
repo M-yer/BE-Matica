@@ -89,9 +89,11 @@ struct World {
   }
 };
 
-// The first structure block along the view ray, stopping before the block that was actually clicked
-// (every cell before it is air, or the ray couldn't have reached it) or, with nothing clicked, at reach.
-bool findTarget(const hologram::Snapshot &h, const Vec3f &eye, const Vec3f &dir, const Cell *clicked, Cell &out) {
+// The first structure block along the view ray that is still empty in the world, stopping at the block
+// that was actually clicked or, with nothing clicked, at reach. Filled cells are skipped: the ray passes
+// through plants like grass and flowers, which aren't air.
+bool findTarget(const hologram::Snapshot &h, const World &w, const Vec3f &eye, const Vec3f &dir, const Cell *clicked,
+                Cell &out) {
   Cell c{static_cast<int>(std::floor(eye.x)), static_cast<int>(std::floor(eye.y)), static_cast<int>(std::floor(eye.z))};
   const float d[3] = {dir.x, dir.y, dir.z}, e[3] = {eye.x, eye.y, eye.z};
   int step[3];
@@ -106,7 +108,7 @@ bool findTarget(const hologram::Snapshot &h, const Vec3f &eye, const Vec3f &dir,
   float t = 0;  // distance travelled along the ray
   for (int i = 0; i < 64 && t <= kReach + 1; ++i) {
     if (clicked && c == *clicked) return false;
-    if (c != head && c != feet && expectedAt(*h.structure, h.origin, h.view, c) >= 0) {
+    if (c != head && c != feet && expectedAt(*h.structure, h.origin, h.view, c) >= 0 && w.isAir(c)) {
       out = c;
       return true;
     }
@@ -193,6 +195,13 @@ bool context(void *gm, Context &ctx) {
   const float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
   if (!(len > 1e-4f) || !std::isfinite(ctx.eye.x)) return false;
   ctx.dir = {d.x / len, d.y / len, d.z / len};
+  static bool checked = false;  // the player's head is always in air: proves the air test works
+  if (!checked) {
+    checked = true;
+    const Cell head{static_cast<int>(std::floor(ctx.eye.x)), static_cast<int>(std::floor(ctx.eye.y)),
+                    static_cast<int>(std::floor(ctx.eye.z))};
+    trace("EasyPlace check: head cell {} {} {} air={}", head[0], head[1], head[2], ctx.world.isAir(head));
+  }
   return true;
 }
 
@@ -242,17 +251,15 @@ bool buildBlockDetour(void *gm, const BlockPos *pos, uint8_t face, uint8_t hand,
   const Cell clicked{pos->x, pos->y, pos->z};
   const Cell normal{clicked[0] + kFaceDir[face][0], clicked[1] + kFaceDir[face][1], clicked[2] + kFaceDir[face][2]};
   Cell target;
-  if (!findTarget(ctx.h, ctx.eye, ctx.dir, &clicked, target)) {
+  if (!findTarget(ctx.h, ctx.world, ctx.eye, ctx.dir, &clicked, target)) {
     if (expectedAt(*ctx.h.structure, ctx.h.origin, ctx.h.view, normal) < 0) {
       trace("EasyPlace build: no ghost block on the view ray, vanilla placement");
       return orig(gm, pos, face, hand, flag);
     }
     target = normal;  // aimed straight at a ghost block's spot
   }
-  if (!ctx.world.isAir(target)) {
-    trace("EasyPlace build: target {} {} {} already has a block", target[0], target[1], target[2]);
-    return false;  // already built: don't stack blocks inside the structure
-  }
+  // Only the fallback (the spot next to the clicked face) can be filled here, e.g. by grass the game will
+  // replace; the game decides whether it can place there.
   if (!holdingRight(ctx, target, hand)) {
     trace("EasyPlace build: wrong block in hand for {} {} {}", target[0], target[1], target[2]);
     return false;
@@ -279,7 +286,7 @@ bool useItemDetour(void *gm, void *stack, uint32_t flag) {
     return orig(gm, stack, flag);
   }
   Cell target;
-  if (!findTarget(ctx.h, ctx.eye, ctx.dir, nullptr, target)) {
+  if (!findTarget(ctx.h, ctx.world, ctx.eye, ctx.dir, nullptr, target)) {
     trace("EasyPlace air: no ghost block within reach (cam {:.1f} {:.1f} {:.1f} dir {:.2f} {:.2f} {:.2f})",
           ctx.eye.x, ctx.eye.y, ctx.eye.z, ctx.dir.x, ctx.dir.y, ctx.dir.z);
     return orig(gm, stack, flag);
