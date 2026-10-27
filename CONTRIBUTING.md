@@ -31,6 +31,16 @@ The output is `release/BE-Matica.levipack`. The first build downloads the SDK's 
 
 The [preloader-android SDK](https://github.com/LiteLDev/preloader-android) is a git submodule, not copied into this repo. If `vendor/preloader-android` is empty, run `git submodule update --init`.
 
+## Unit tests
+
+Code that doesn't touch the game (file readers, conversions) has tests that run on your computer, no NDK or phone needed:
+
+```bash
+./scripts/test.sh
+```
+
+To check the reader against your own files: `build/host-tests/mcstructure_test path/to/*.mcstructure`
+
 ## Testing on a device
 
 1. Build, then copy `release/BE-Matica.levipack` to your phone.
