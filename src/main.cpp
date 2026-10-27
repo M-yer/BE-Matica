@@ -1,3 +1,4 @@
+#include "hologram.hpp"
 #include "library.hpp"
 #include "materials_panel.hpp"
 
@@ -6,6 +7,8 @@
 #include <pl/ModMenu.hpp>
 #include <pl/ModMenuConfig.hpp>
 
+#include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -57,6 +60,7 @@ public:
                   .onToggle([this](std::string_view, bool on) {
                     std::lock_guard lock(mu_);
                     enabled_ = on;
+                    hologram::setVisible(enabled_ && hologramOn_);
                     syncPanelLocked();
                   })
                   .onConfigChanged([this](std::string_view, std::string_view key, std::string_view value) {
@@ -68,7 +72,13 @@ public:
     const auto surface = mm::getHudSurfaceSize();
     ctx.logger().info("BE-Matica: HUD surface {}x{}", surface.width, surface.height);
 
+    std::string holoError;
+    hologramOk_ = hologram::install(ctx.logger(), holoError);
+    if (!hologramOk_) ctx.logger().warn("BE-Matica: hologram unavailable: {}", holoError);
+    hologram::setOpacity(opacity_ / 100.0f);
+
     std::lock_guard lock(mu_);
+    if (!hologramOk_) status_ = "Hologram unavailable: " + holoError;
     scanLocked();
     publishLocked();
     ctx.logger().info("BE-Matica enabled, structures folder: {}", structuresDir_.string());
@@ -77,6 +87,7 @@ public:
 
   bool disable(pl::mod::ModContext &ctx) {
     panel_.shutdown();
+    hologram::uninstall();
     mm::clearConfigSchema(kModule);
     mm::unregisterModule(kModule);
     ctx.logger().info("BE-Matica disabled");
@@ -95,6 +106,16 @@ private:
       status_ = files_.empty() ? "No structures yet" : std::to_string(files_.size()) + " structures found";
     } else if (key == "overlay") {
       overlay_ = value == "true" || value == "1";
+    } else if (key == "hologram") {
+      hologramOn_ = value == "true" || value == "1";
+      hologram::setVisible(enabled_ && hologramOn_);
+    } else if (key == "move") {
+      hologram::moveToPlayer();
+      status_ = "Hologram moved to you";
+    } else if (key == "opacity") {
+      opacity_ = std::clamp(std::atoi(std::string(value).c_str()), 10, 100);
+      hologram::setOpacity(opacity_ / 100.0f);
+      return;  // no page change needed while the slider is dragged
     } else {
       return;
     }
@@ -154,6 +175,7 @@ private:
     materials_ = countMaterials(loaded_);
     status_ = "Loaded " + name;
     panel_.setContent(name.substr(0, name.rfind('.')), materials_);
+    hologram::show(std::make_shared<const Structure>(loaded_), true);
     ctx_->logger().info("BE-Matica: loaded {} ({})", name, sizeText(loaded_));
   }
 
@@ -173,6 +195,16 @@ private:
     if (files_.empty()) file.description = "Import a structure to get started.";
     schema.node(std::move(file));
 
+    if (hologramOk_) {
+      schema.node(N{.id = "hologram", .key = "hologram", .category = "main", .title = "Show hologram",
+                    .type = T::Toggle, .defaultValue = "true", .currentValue = hologramOn_ ? "true" : "false",
+                    .hasCurrentValue = true});
+      schema.node(N{.id = "move", .key = "move", .category = "main", .title = "Move hologram to me",
+                    .description = "Puts the structure's corner where you stand.", .type = T::Button});
+      schema.node(N{.id = "opacity", .key = "opacity", .category = "main", .title = "Hologram opacity",
+                    .type = T::SliderInt, .defaultValue = "45", .currentValue = std::to_string(opacity_),
+                    .hasCurrentValue = true, .minValue = "10", .maxValue = "100", .step = "5", .unit = "%"});
+    }
     schema.node(N{.id = "refresh", .key = "refresh", .category = "main", .title = "Refresh list",
                   .description = "Rescan " + structuresDir_.string().substr(8), .type = T::Button});
     schema.node(N{.id = "overlay", .key = "overlay", .category = "main", .title = "Blocks button on screen",
@@ -205,6 +237,8 @@ private:
 
   pl::mod::ModContext *ctx_ = nullptr;
   MaterialsPanel panel_;
+  bool hologramOk_ = false, hologramOn_ = true;
+  int opacity_ = 45;
   fs::path structuresDir_;
   // Recursive: the launcher may call back into onSetting while a settings page is being set.
   std::recursive_mutex mu_;
