@@ -1,4 +1,5 @@
 #include "library.hpp"
+#include "materials_panel.hpp"
 
 #include <pl/Input.hpp>
 #include <pl/Mod.hpp>
@@ -56,13 +57,16 @@ public:
                   .onToggle([this](std::string_view, bool on) {
                     std::lock_guard lock(mu_);
                     enabled_ = on;
-                    drawOverlayLocked();
+                    syncPanelLocked();
                   })
                   .onConfigChanged([this](std::string_view, std::string_view key, std::string_view value) {
                     onSetting(key, value);
                   })
                   .registerModule();
     if (!ok) ctx.logger().warn("BE-Matica: menu registration failed");
+    panel_.init(kModule, ctx.id());
+    const auto surface = mm::getHudSurfaceSize();
+    ctx.logger().info("BE-Matica: HUD surface {}x{}", surface.width, surface.height);
 
     std::lock_guard lock(mu_);
     scanLocked();
@@ -72,6 +76,7 @@ public:
   }
 
   bool disable(pl::mod::ModContext &ctx) {
+    panel_.shutdown();
     mm::clearConfigSchema(kModule);
     mm::unregisterModule(kModule);
     ctx.logger().info("BE-Matica disabled");
@@ -148,6 +153,7 @@ private:
     loadedName_ = name;
     materials_ = countMaterials(loaded_);
     status_ = "Loaded " + name;
+    panel_.setContent(name.substr(0, name.rfind('.')), materials_);
     ctx_->logger().info("BE-Matica: loaded {} ({})", name, sizeText(loaded_));
   }
 
@@ -169,7 +175,8 @@ private:
 
     schema.node(N{.id = "refresh", .key = "refresh", .category = "main", .title = "Refresh list",
                   .description = "Rescan " + structuresDir_.string().substr(8), .type = T::Button});
-    schema.node(N{.id = "overlay", .key = "overlay", .category = "main", .title = "Material list on screen",
+    schema.node(N{.id = "overlay", .key = "overlay", .category = "main", .title = "Blocks button on screen",
+                  .description = "Opens a scrollable block list while you build. Tap a block to tick it off.",
                   .type = T::Toggle, .defaultValue = "false", .currentValue = overlay_ ? "true" : "false",
                   .hasCurrentValue = true});
     if (!status_.empty())
@@ -191,29 +198,13 @@ private:
     publishing_ = true;
     if (!mm::setConfigSchemaJson(kModule, schema.toJson())) ctx_->logger().warn("BE-Matica: settings page rejected");
     publishing_ = false;
-    drawOverlayLocked();
+    syncPanelLocked();
   }
 
-  void drawOverlayLocked() {
-    std::vector<mm::DrawCommand> cmds;
-    if (enabled_ && overlay_ && !loadedName_.empty()) {
-      std::vector<std::string> lines{loadedName_ + "  " + sizeText(loaded_)};
-      constexpr size_t kShown = 12;
-      for (size_t k = 0; k < materials_.size() && k < kShown; ++k)
-        lines.push_back(std::to_string(materials_[k].count) + "  " + materials_[k].name);
-      if (materials_.size() > kShown) lines.push_back("+" + std::to_string(materials_.size() - kShown) + " more");
-
-      constexpr float kX = 16, kY = 80, kLine = 20, kWidth = 360;
-      cmds.push_back({.type = mm::DrawCommandType::RectFilled, .x = kX, .y = kY, .w = kWidth,
-                      .h = kLine * lines.size() + 12, .color = 0xB0000000});
-      for (size_t k = 0; k < lines.size(); ++k)
-        cmds.push_back({.type = mm::DrawCommandType::Text, .x = kX + 8, .y = kY + 6 + kLine * k,
-                        .color = 0xFFFFFFFF, .size = 16, .text = lines[k]});
-    }
-    mm::submitDrawCommands(kModule, cmds);
-  }
+  void syncPanelLocked() { panel_.setVisible(enabled_ && overlay_ && !loadedName_.empty()); }
 
   pl::mod::ModContext *ctx_ = nullptr;
+  MaterialsPanel panel_;
   fs::path structuresDir_;
   // Recursive: the launcher may call back into onSetting while a settings page is being set.
   std::recursive_mutex mu_;
