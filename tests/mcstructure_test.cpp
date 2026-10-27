@@ -1,4 +1,5 @@
 // Host-side test: builds .mcstructure bytes by hand and checks the loader.
+#include "library.hpp"
 #include "mcstructure.hpp"
 
 #include <cstdio>
@@ -149,6 +150,10 @@ int main(int argc, char **argv) {
   CHECK(dir && dir->i == 2);
   const auto *upside = s.palette[2].states.get("upside_down_bit", nbt::Type::Byte);
   CHECK(upside && upside->i == 1);
+
+  auto mats = countMaterials(s);
+  CHECK(mats.size() == 3);  // stone, oak_stairs, water; air left out
+  CHECK(mats.size() == 3 && mats[0].name == "oak_stairs" && mats[0].count == 1);
 
   // Every truncation of a valid file must fail cleanly, never crash.
   for (size_t n = 0; n < good.size(); ++n) {

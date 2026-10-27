@@ -15,7 +15,7 @@ if(NOT EXISTS "${PL_SDK}/CMakeLists.txt")
 endif()
 add_subdirectory("${PL_SDK}" "${CMAKE_BINARY_DIR}/_preloader")
 
-add_library(BEMatica SHARED src/main.cpp src/nbt.cpp src/mcstructure.cpp)
+add_library(BEMatica SHARED src/main.cpp src/nbt.cpp src/mcstructure.cpp src/library.cpp)
 target_include_directories(BEMatica PRIVATE src)
 target_link_libraries(BEMatica PRIVATE preloader log)
 target_compile_options(BEMatica PRIVATE -O2 -fvisibility=hidden -fvisibility-inlines-hidden -Wall)
