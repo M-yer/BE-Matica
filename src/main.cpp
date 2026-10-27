@@ -77,6 +77,7 @@ public:
     hologram::setOpacity(opacity_ / 100.0f);
     hologram::setVisible(hologramOn_);
     easyplace::setEnabled(easyPlaceOn_);
+    easyplace::setAirPlace(airPlaceOn_);
     easyplace::installAsync(
         ctx.logger(), [this](const std::string &text) { panel_.toast(text); },
         [this] {
@@ -148,6 +149,11 @@ private:
     } else if (key == "easyplace") {
       easyPlaceOn_ = value == "true" || value == "1";
       easyplace::setEnabled(easyPlaceOn_);
+      saveSettingsLocked();
+      return;
+    } else if (key == "airplace") {
+      airPlaceOn_ = value == "true" || value == "1";
+      easyplace::setAirPlace(airPlaceOn_);
       saveSettingsLocked();
       return;
     } else if (key == "move") {
@@ -292,6 +298,10 @@ private:
                                      "placed: hold it in your hand.",
                       .type = T::Toggle, .defaultValue = "false", .currentValue = easyPlaceOn_ ? "true" : "false",
                       .hasCurrentValue = true});
+        schema.node(N{.id = "airplace", .key = "airplace", .category = "easyplace", .title = "Air build",
+                      .description = "Place ghost blocks in mid-air, even with nothing next to them.",
+                      .type = T::Toggle, .defaultValue = "true", .currentValue = airPlaceOn_ ? "true" : "false",
+                      .hasCurrentValue = true});
         schema.node(N{.id = "easyplace_help", .category = "easyplace", .title = "How it works",
                       .description = "Aim at a ghost block, or through it at the ground behind, and tap to place. "
                                      "Taps outside the hologram place blocks normally.\n"
@@ -374,6 +384,7 @@ private:
     std::ifstream in(settingsFile());
     for (std::string key, value; std::getline(in, key, '=') && std::getline(in, value);) {
       if (key == "easyplace") easyPlaceOn_ = value == "1";
+      else if (key == "airplace") airPlaceOn_ = value == "1";
       else if (key == "hologram") hologramOn_ = value == "1";
       else if (key == "overlay") overlay_ = value == "1";
       else if (key == "opacity") opacity_ = std::clamp(std::atoi(value.c_str()), 10, 100);
@@ -381,7 +392,7 @@ private:
   }
 
   void saveSettingsLocked() {
-    std::ofstream(settingsFile()) << "easyplace=" << easyPlaceOn_ << "\nhologram=" << hologramOn_
+    std::ofstream(settingsFile()) << "easyplace=" << easyPlaceOn_ << "\nairplace=" << airPlaceOn_ << "\nhologram=" << hologramOn_
                                   << "\noverlay=" << overlay_ << "\nopacity=" << opacity_ << "\n";
   }
 
@@ -390,7 +401,7 @@ private:
   pl::mod::ModContext *ctx_ = nullptr;
   MaterialsPanel panel_;
   bool hologramOk_ = false, hologramOn_ = true;
-  bool easyPlaceOk_ = false, easyPlaceOn_ = false;
+  bool easyPlaceOk_ = false, easyPlaceOn_ = false, airPlaceOn_ = true;
   int opacity_ = 45;
   View view_;
   fs::path structuresDir_;

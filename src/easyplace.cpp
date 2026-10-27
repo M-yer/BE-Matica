@@ -34,6 +34,7 @@ BlockRegistryFn gRegistry = nullptr;
 BlockLookupFn gLookup = nullptr;
 
 std::atomic_bool gEnabled{false};
+std::atomic_bool gAirPlace{true};
 std::function<void(const std::string &)> gMessage;
 std::function<void()> gLayerDone;
 pl::log::Logger *gLog = nullptr;
@@ -132,12 +133,19 @@ void say(const std::string &text) {
 // Places the held block into `target` by clicking the face of a solid neighbour. The game checks the
 // placement against its current hit result, so that is pointed at the same face for the call.
 bool placeAt(void *gm, void *player, const World &w, const Cell &target, uint8_t hand, bool flag) {
-  for (uint8_t face = 0; face < 6; ++face) {
-    const Cell n{target[0] - kFaceDir[face][0], target[1] - kFaceDir[face][1], target[2] - kFaceDir[face][2]};
-    if (w.isAir(n)) continue;
+  // The last pass is air place: click the empty target cell itself, which the game fills since air is
+  // replaceable.
+  for (uint8_t face = 0; face < 7; ++face) {
+    const bool air = face == 6;
+    if (air && !gAirPlace.load(std::memory_order_relaxed)) break;
+    const uint8_t clickFace = air ? 1 : face;
+    const Cell n = air ? target
+                       : Cell{target[0] - kFaceDir[face][0], target[1] - kFaceDir[face][1],
+                              target[2] - kFaceDir[face][2]};
+    if (!air && w.isAir(n)) continue;
     const BlockPos pos{n[0], n[1], n[2]};
-    const float hit[3] = {n[0] + 0.5f + 0.5f * kFaceDir[face][0], n[1] + 0.5f + 0.5f * kFaceDir[face][1],
-                          n[2] + 0.5f + 0.5f * kFaceDir[face][2]};
+    const float hit[3] = {n[0] + 0.5f + 0.5f * kFaceDir[clickFace][0], n[1] + 0.5f + 0.5f * kFaceDir[clickFace][1],
+                          n[2] + 0.5f + 0.5f * kFaceDir[clickFace][2]};
 
     char *hr = hitResultOf(player);
 
@@ -146,7 +154,7 @@ bool placeAt(void *gm, void *player, const World &w, const Cell &target, uint8_t
     const bool alt = at<uint8_t>(gm, off::GameMode_hasAltHit) != 0;
     if (hr) {
       std::memcpy(savedHr, hr + off::HitResult_type, sizeof(savedHr));
-      const int type = 0, f = face;  // 0 = hit a block
+      const int type = 0, f = clickFace;  // 0 = hit a block
       std::memcpy(hr + off::HitResult_type, &type, 4);
       std::memcpy(hr + off::HitResult_face, &f, 4);
       std::memcpy(hr + off::HitResult_pos, &pos, 12);
@@ -158,9 +166,9 @@ bool placeAt(void *gm, void *player, const World &w, const Cell &target, uint8_t
     }
 
     tInside = true;
-    const bool placed = gBuildOrig.load()(gm, &pos, face, hand, flag);
+    const bool placed = gBuildOrig.load()(gm, &pos, clickFace, hand, flag);
     tInside = false;
-    trace("EasyPlace: clicked support {} {} {} face {} -> {}", n[0], n[1], n[2], face, placed ? "placed" : "rejected");
+    trace("EasyPlace: clicked {} {} {} {} face {} -> {}", air ? "air" : "support", n[0], n[1], n[2], clickFace, placed ? "placed" : "rejected");
 
     if (hr) std::memcpy(hr + off::HitResult_type, savedHr, sizeof(savedHr));
     if (alt && !placed) std::memcpy(static_cast<char *>(gm) + off::GameMode_altHitPos, savedAlt, sizeof(savedAlt));
@@ -368,5 +376,6 @@ void uninstall() {
 }
 
 void setEnabled(bool enabled) { gEnabled = enabled; }
+void setAirPlace(bool on) { gAirPlace = on; }
 
 }  // namespace bematica::easyplace

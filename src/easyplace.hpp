@@ -18,5 +18,7 @@ void installAsync(pl::log::Logger &log, std::function<void(const std::string &)>
                   std::function<void()> layerDone, std::function<void(bool ok, const std::string &error)> done);
 void uninstall();
 void setEnabled(bool enabled);
+// Air build: with nothing next to a ghost block to click against, place it in mid-air anyway.
+void setAirPlace(bool on);
 
 }  // namespace bematica::easyplace
