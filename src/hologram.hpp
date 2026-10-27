@@ -3,6 +3,7 @@
 #include "mcstructure.hpp"
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -12,9 +13,10 @@ class Logger;
 
 namespace bematica::hologram {
 
-// Finds the game functions and hooks world rendering. Returns false (with a reason) if this
-// Minecraft version isn't supported; the rest of the mod keeps working without the hologram.
-bool install(pl::log::Logger &log, std::string &error);
+// Finds the game functions and hooks world rendering on a background thread: scanning the game
+// takes seconds, and blocking the loading screen that long makes Android kill the app.
+// `done` reports success, or why this Minecraft version isn't supported.
+void installAsync(pl::log::Logger &log, std::function<void(bool ok, const std::string &error)> done);
 void uninstall();
 
 // Shows `s` in the world. If `atPlayer` is set, it is placed at the player's feet on the next frame.

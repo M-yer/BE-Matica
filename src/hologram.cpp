@@ -12,6 +12,8 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <thread>
+#include <vector>
 
 namespace bematica::hologram {
 namespace {
@@ -22,7 +24,7 @@ constexpr size_t kMaxQuads = 200000;
 constexpr size_t kQuadBatch = 512;   // vertices per Tessellator batch stay well under its limits
 constexpr size_t kLineBatch = 1024;
 
-RenderLevelFn gRenderLevelOrig = nullptr;
+std::atomic<RenderLevelFn> gRenderLevelOrig{nullptr};
 void *gRenderLevelTarget = nullptr;
 TessBeginFn gBegin = nullptr;
 TessColorFn gColor = nullptr;
@@ -83,7 +85,10 @@ template <typename T> T at(void *base, unsigned offset) {
 }
 
 void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject) {
-  gRenderLevelOrig(self, screenContext, frameRenderObject);
+  // The game can enter the detour before hook() has stored the original on the install thread.
+  RenderLevelFn orig;
+  while (!(orig = gRenderLevelOrig.load(std::memory_order_acquire))) std::this_thread::yield();
+  orig(self, screenContext, frameRenderObject);
   if (!gVisible.load(std::memory_order_relaxed) || !self || !screenContext) return;
 
   void *tess = at<void *>(screenContext, off::ScreenContext_tessellator);
@@ -131,12 +136,14 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
 
 }  // namespace
 
+namespace {
 bool install(pl::log::Logger &log, std::string &error) {
   struct Want {
     const char *name, *sig;
     void **out;
   };
   void *renderLevel = nullptr;
+  void *origSlot = nullptr;
   const Want wants[] = {
       {"RenderLevel", sig::RenderLevel, &renderLevel},
       {"TessellatorBegin", sig::TessellatorBegin, reinterpret_cast<void **>(&gBegin)},
@@ -144,8 +151,13 @@ bool install(pl::log::Logger &log, std::string &error) {
       {"TessellatorVertex", sig::TessellatorVertex, reinterpret_cast<void **>(&gVertex)},
       {"RenderMeshImmediately", sig::RenderMeshImmediately, reinterpret_cast<void **>(&gRenderMesh)},
   };
+  // One pass over the game for all signatures.
+  std::vector<std::string> sigs;
+  for (const auto &w : wants) sigs.emplace_back(w.sig);
+  const auto found = pl::memory::resolveSignatures(sigs, "libminecraftpe.so");
   for (const auto &w : wants) {
-    const uintptr_t addr = pl::memory::resolveSignature(w.sig, "libminecraftpe.so");
+    const auto it = found.find(w.sig);
+    const uintptr_t addr = it == found.end() ? 0 : it->second;
     if (!addr) {
       error = std::string("game function not found: ") + w.name;
       return false;
@@ -153,14 +165,22 @@ bool install(pl::log::Logger &log, std::string &error) {
     *w.out = reinterpret_cast<void *>(addr);
     log.info("BE-Matica: {} at {:#x}", w.name, addr);
   }
-  if (pl::memory::hook(renderLevel, reinterpret_cast<void *>(&renderLevelDetour),
-                       reinterpret_cast<void **>(&gRenderLevelOrig)) != 0 ||
-      !gRenderLevelOrig) {
+  if (pl::memory::hook(renderLevel, reinterpret_cast<void *>(&renderLevelDetour), &origSlot) != 0 || !origSlot) {
     error = "could not hook world rendering";
     return false;
   }
+  gRenderLevelOrig.store(reinterpret_cast<RenderLevelFn>(origSlot), std::memory_order_release);
   gRenderLevelTarget = renderLevel;
   return true;
+}
+}  // namespace
+
+void installAsync(pl::log::Logger &log, std::function<void(bool, const std::string &)> done) {
+  std::thread([&log, done = std::move(done)] {
+    std::string error;
+    const bool ok = install(log, error);
+    done(ok, error);
+  }).detach();
 }
 
 void uninstall() {

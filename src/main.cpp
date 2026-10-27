@@ -72,13 +72,18 @@ public:
     const auto surface = mm::getHudSurfaceSize();
     ctx.logger().info("BE-Matica: HUD surface {}x{}", surface.width, surface.height);
 
-    std::string holoError;
-    hologramOk_ = hologram::install(ctx.logger(), holoError);
-    if (!hologramOk_) ctx.logger().warn("BE-Matica: hologram unavailable: {}", holoError);
     hologram::setOpacity(opacity_ / 100.0f);
+    hologram::installAsync(ctx.logger(), [this](bool ok, const std::string &error) {
+      std::lock_guard lock(mu_);
+      hologramOk_ = ok;
+      if (!ok) {
+        status_ = "Hologram unavailable: " + error;
+        ctx_->logger().warn("BE-Matica: {}", status_);
+      }
+      publishLocked();
+    });
 
     std::lock_guard lock(mu_);
-    if (!hologramOk_) status_ = "Hologram unavailable: " + holoError;
     scanLocked();
     publishLocked();
     ctx.logger().info("BE-Matica enabled, structures folder: {}", structuresDir_.string());
