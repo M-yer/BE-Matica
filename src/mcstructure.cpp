@@ -22,7 +22,8 @@ bool loadMcstructure(std::span<const uint8_t> data, Structure &out, std::string 
 
   out = Structure{};
   const auto *format = root.get("format_version", nbt::Type::Int);
-  if (!format || format->i != 1) return fail(error, "unsupported format_version");
+  // Version 2 stores each block layer as an IntArray instead of a List of Int; the data is the same.
+  if (!format || (format->i != 1 && format->i != 2)) return fail(error, "unsupported format_version");
   if (!readVec3(root.get("size"), out.size)) return fail(error, "missing size");
   readVec3(root.get("structure_world_origin"), out.origin);
   for (int v : out.size)
@@ -50,7 +51,8 @@ bool loadMcstructure(std::span<const uint8_t> data, Structure &out, std::string 
   }
 
   const auto *indices = structure->get("block_indices", nbt::Type::List);
-  if (!indices || (!indices->items.empty() && indices->listType != nbt::Type::List))
+  if (!indices || (!indices->items.empty() && indices->listType != nbt::Type::List &&
+                   indices->listType != nbt::Type::IntArray))
     return fail(error, "missing block_indices");
 
   const size_t volume = out.volume();
