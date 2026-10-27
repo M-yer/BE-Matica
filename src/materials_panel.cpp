@@ -14,6 +14,19 @@ namespace mm = pl::modmenu;
 namespace {
 
 constexpr const char *kButtonId = "bematica.blocks";
+// BE-Matica's own pixel-art chest, drawn on a 16x16 grid.
+constexpr const char *kChestIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges">
+<rect x="1" y="2" width="14" height="13" fill="#2b1a0e"/>
+<rect x="2" y="3" width="12" height="4" fill="#a8743a"/>
+<rect x="2" y="3" width="12" height="1" fill="#c99350"/>
+<rect x="2" y="7" width="12" height="1" fill="#2b1a0e"/>
+<rect x="2" y="8" width="12" height="6" fill="#8a5a2b"/>
+<rect x="2" y="13" width="12" height="1" fill="#5e3a1a"/>
+<rect x="2" y="8" width="1" height="6" fill="#a8743a"/>
+<rect x="6" y="5" width="4" height="5" fill="#2b1a0e"/>
+<rect x="7" y="6" width="2" height="3" fill="#f2c14e"/>
+<rect x="7" y="8" width="2" height="1" fill="#c8962c"/>
+</svg>)";
 // Android MotionEvent actions.
 constexpr int kDown = 0, kUp = 1, kMove = 2, kCancel = 3, kPointerDown = 5, kPointerUp = 6;
 
@@ -60,7 +73,7 @@ void MaterialsPanel::setVisible(bool visible) {
                             .moduleId(moduleId_)
                             .modId(modId_)
                             .label("Blocks")
-                            .sizeScale(1.6f, 0.8f)
+                            .svgIcon(kChestIcon)
                             .onEvent([this](std::string_view, mm::ButtonEvent e, float) {
                               if (e == mm::ButtonEvent::Click) toggleOpen();
                             })
