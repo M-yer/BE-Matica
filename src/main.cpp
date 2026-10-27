@@ -4,6 +4,7 @@
 #include <pl/ModMenu.hpp>
 
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -15,6 +16,14 @@ namespace mm = pl::modmenu;
 
 constexpr const char *kModule = "bematica.main";
 constexpr const char *kPanelButton = "bematica.panel";
+
+// The launcher app can always read its own folder on shared storage; Download needs "All files access".
+fs::path appStorageDir() {
+  std::string pkg;
+  std::getline(std::ifstream("/proc/self/cmdline"), pkg, '\0');
+  pkg = pkg.substr(0, pkg.find(':'));
+  return fs::path("/sdcard/Android/data") / pkg / "files";
+}
 
 class Mod {
 public:
@@ -30,7 +39,7 @@ public:
 
   bool enable(pl::mod::ModContext &ctx) {
     ctx_ = &ctx;
-    structuresDir_ = ctx.configDir() / "structures";
+    structuresDir_ = appStorageDir() / "BE-Matica" / "structures";
     std::error_code ec;
     fs::create_directories(structuresDir_, ec);
 
@@ -122,7 +131,7 @@ private:
     std::vector<mm::DrawCommand> cmds;
     if (panel_) {
       std::vector<std::string> lines{"BE-Matica"};
-      lines.push_back(files_.empty() ? "Put .mcstructure files in Download"
+      lines.push_back(files_.empty() ? "Put .mcstructure files in " + structuresDir_.string().substr(8)
                                      : "File " + std::to_string(selected_ + 1) + "/" + std::to_string(files_.size()) +
                                            ": " + files_[selected_].filename().string());
       lines.push_back(status_);
