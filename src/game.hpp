@@ -12,6 +12,11 @@ namespace sig {
 constexpr const char *RenderLevel =
     "EE 0F 16 FC ED 33 01 6D EB 2B 02 6D E9 23 03 6D FD 7B 04 A9 FC 6F 05 A9 FA 67 06 A9 F8 5F 07 A9 F6 57 08 A9 F4 4F "
     "09 A9 FD 03 01 91 FF 03 06 D1";
+// RenderLevel minus its first 16 bytes, which another mod's inline hook may have overwritten.
+constexpr const char *RenderLevelTail =
+    "FD 7B 04 A9 FC 6F 05 A9 FA 67 06 A9 F8 5F 07 A9 F6 57 08 A9 F4 4F 09 A9 FD 03 01 91 FF 03 06 D1 57 D0 3B D5 F8 03 "
+    "00 AA";
+constexpr uintptr_t RenderLevelTailOffset = 16;
 // Tessellator::begin(name, primitive mode, vertex count, build face data)
 constexpr const char *TessellatorBegin = "FD 7B BC A9 F8 5F 01 A9 F6 57 02 A9 F4 4F 03 A9 FD 03 00 91 08 60 4A 39";
 // Tessellator::color(r, g, b, a)

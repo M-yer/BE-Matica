@@ -159,7 +159,12 @@ bool install(pl::log::Logger &log, std::string &error) {
   // One pass over the game for all signatures.
   std::vector<std::string> sigs;
   for (const auto &w : wants) sigs.emplace_back(w.sig);
-  const auto found = pl::memory::resolveSignatures(sigs, "libminecraftpe.so");
+  sigs.emplace_back(sig::RenderLevelTail);
+  auto found = pl::memory::resolveSignatures(sigs, "libminecraftpe.so");
+  if (!found[sig::RenderLevel] && found[sig::RenderLevelTail]) {
+    found[sig::RenderLevel] = found[sig::RenderLevelTail] - sig::RenderLevelTailOffset;
+    log.info("BE-Matica: RenderLevel was already hooked by another mod, hooking on top of it");
+  }
   for (const auto &w : wants) {
     const auto it = found.find(w.sig);
     const uintptr_t addr = it == found.end() ? 0 : it->second;
