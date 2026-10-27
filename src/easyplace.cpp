@@ -23,7 +23,9 @@ using namespace game;
 using Cell = std::array<int, 3>;
 
 std::atomic<BuildBlockFn> gBuildOrig{nullptr};
-void *gBuildTarget = nullptr;
+std::atomic<UseItemFn> gUseOrig{nullptr};
+void *gBuildTarget = nullptr, *gUseTarget = nullptr;
+constexpr float kReach = 6.0f;  // blocks; how far a tap into the air can reach a ghost block
 GetBlockFn gGetBlock = nullptr;
 ItemBlockTypeFn gItemBlockType = nullptr;
 HandItemFn gHandItem = nullptr;
@@ -32,6 +34,7 @@ BlockLookupFn gLookup = nullptr;
 
 std::atomic_bool gEnabled{false};
 std::function<void(const std::string &)> gMessage;
+std::function<void()> gLayerDone;
 thread_local bool tInside = false;  // our own calls into buildBlock pass straight through
 
 // Bedrock block faces: down, up, north (-z), south (+z), west (-x), east (+x).
@@ -67,9 +70,9 @@ struct World {
   }
 };
 
-// The first structure block along the view ray that is still air in the world, stopping before the
-// block that was actually clicked (every cell before it is air, or the ray couldn't have reached it).
-bool findTarget(const hologram::Snapshot &h, const Vec3f &eye, const Vec3f &dir, const Cell &clicked, Cell &out) {
+// The first structure block along the view ray, stopping before the block that was actually clicked
+// (every cell before it is air, or the ray couldn't have reached it) or, with nothing clicked, at reach.
+bool findTarget(const hologram::Snapshot &h, const Vec3f &eye, const Vec3f &dir, const Cell *clicked, Cell &out) {
   Cell c{static_cast<int>(std::floor(eye.x)), static_cast<int>(std::floor(eye.y)), static_cast<int>(std::floor(eye.z))};
   const float d[3] = {dir.x, dir.y, dir.z}, e[3] = {eye.x, eye.y, eye.z};
   int step[3];
@@ -81,17 +84,23 @@ bool findTarget(const hologram::Snapshot &h, const Vec3f &eye, const Vec3f &dir,
     tMax[a] = d[a] != 0 ? (edge - e[a]) / d[a] : INFINITY;
   }
   const Cell head = c, feet{c[0], c[1] - 1, c[2]};  // the player can't place into their own body
-  for (int i = 0; i < 64; ++i) {  // well past any reach distance
-    if (c == clicked) return false;
+  float t = 0;  // distance travelled along the ray
+  for (int i = 0; i < 64 && t <= kReach + 1; ++i) {
+    if (clicked && c == *clicked) return false;
     if (c != head && c != feet && expectedAt(*h.structure, h.origin, h.view, c) >= 0) {
       out = c;
       return true;
     }
     const int a = tMax[0] < tMax[1] ? (tMax[0] < tMax[2] ? 0 : 2) : (tMax[1] < tMax[2] ? 1 : 2);
+    t = tMax[a];
     c[a] += step[a];
     tMax[a] += tDelta[a];
   }
   return false;
+}
+
+std::string shortName(const std::string &name) {
+  return name.rfind("minecraft:", 0) == 0 ? name.substr(10) : name;
 }
 
 void say(const std::string &text) {
@@ -141,41 +150,34 @@ bool placeAt(void *gm, void *player, const World &w, const Cell &target, uint8_t
   return false;
 }
 
-std::string shortName(const std::string &name) {
-  return name.rfind("minecraft:", 0) == 0 ? name.substr(10) : name;
-}
+struct Context {
+  hologram::Snapshot h;
+  void *player = nullptr;
+  World world{};
+  Vec3f dir{};
+};
 
-bool buildBlockDetour(void *gm, const BlockPos *pos, uint8_t face, uint8_t hand, bool flag) {
-  BuildBlockFn orig;
-  while (!(orig = gBuildOrig.load(std::memory_order_acquire))) std::this_thread::yield();
-  if (tInside || !gEnabled.load(std::memory_order_relaxed) || !gm || !pos || face > 5)
-    return orig(gm, pos, face, hand, flag);
-
-  const auto h = hologram::snapshot();
-  void *player = at<void *>(gm, off::GameMode_player);
-  if (!h.structure || !h.haveCamera || !player) return orig(gm, pos, face, hand, flag);
-  void *dimension = at<void *>(player, off::Actor_dimension);
+// Everything Easy Place needs about the player and world, or false to leave the tap to the game.
+bool context(void *gm, Context &ctx) {
+  ctx.h = hologram::snapshot();
+  ctx.player = at<void *>(gm, off::GameMode_player);
+  if (!ctx.h.structure || !ctx.h.haveCamera || !ctx.player) return false;
+  void *dimension = at<void *>(ctx.player, off::Actor_dimension);
   void *source = dimension ? at<void *>(dimension, off::Dimension_blockSource) : nullptr;
   const void *air = blockTypeOf("minecraft:air");
-  if (!source || !air) return orig(gm, pos, face, hand, flag);
-  const World world{source, air};
-
+  if (!source || !air) return false;
+  ctx.world = {source, air};
   // View direction from the player's pitch and yaw (degrees; yaw 0 faces +z).
-  const auto rot = at<std::array<float, 2>>(player, off::Actor_rotation);
+  const auto rot = at<std::array<float, 2>>(ctx.player, off::Actor_rotation);
   const float pitch = rot[0] * static_cast<float>(M_PI) / 180, yaw = rot[1] * static_cast<float>(M_PI) / 180;
-  const Vec3f dir{-std::sin(yaw) * std::cos(pitch), -std::sin(pitch), std::cos(yaw) * std::cos(pitch)};
+  ctx.dir = {-std::sin(yaw) * std::cos(pitch), -std::sin(pitch), std::cos(yaw) * std::cos(pitch)};
+  return true;
+}
 
-  const Cell clicked{pos->x, pos->y, pos->z};
-  const Cell normal{clicked[0] + kFaceDir[face][0], clicked[1] + kFaceDir[face][1], clicked[2] + kFaceDir[face][2]};
-  Cell target;
-  if (!findTarget(h, h.camera, dir, clicked, target)) {
-    if (expectedAt(*h.structure, h.origin, h.view, normal) < 0) return orig(gm, pos, face, hand, flag);
-    target = normal;  // aimed straight at a ghost block's spot
-  }
-  if (!world.isAir(target)) return false;  // already built: don't stack blocks inside the structure
-
-  const std::string &want = h.structure->palette[expectedAt(*h.structure, h.origin, h.view, target)].name;
-  const void *stack = gHandItem(player, hand);
+// The held block must be the one the structure wants at `target`.
+bool holdingRight(const Context &ctx, const Cell &target, uint8_t hand) {
+  const std::string &want = ctx.h.structure->palette[expectedAt(*ctx.h.structure, ctx.h.origin, ctx.h.view, target)].name;
+  const void *stack = gHandItem(ctx.player, hand);
   const void *held = stack ? gItemBlockType(stack).blockType : nullptr;
   const void *expected = blockTypeOf(want);
   if (!expected) {
@@ -186,14 +188,60 @@ bool buildBlockDetour(void *gm, const BlockPos *pos, uint8_t face, uint8_t hand,
     say("Hold " + shortName(want));
     return false;
   }
+  return true;
+}
+
+// In single-layer view, tell the UI once every block of the layer exists in the world.
+bool afterPlace(const Context &ctx, bool placed) {
+  if (!placed || ctx.h.view.layers != View::Layers::Single || !gLayerDone) return placed;
+  const auto size = viewSize(*ctx.h.structure, ctx.h.view);
+  const int y = ctx.h.origin[1] + ctx.h.view.layer;
+  for (int x = 0; x < size[0]; ++x)
+    for (int z = 0; z < size[2]; ++z) {
+      const Cell c{ctx.h.origin[0] + x, y, ctx.h.origin[2] + z};
+      if (expectedAt(*ctx.h.structure, ctx.h.origin, ctx.h.view, c) >= 0 && ctx.world.isAir(c)) return placed;
+    }
+  gLayerDone();
+  return placed;
+}
+
+bool buildBlockDetour(void *gm, const BlockPos *pos, uint8_t face, uint8_t hand, bool flag) {
+  BuildBlockFn orig;
+  while (!(orig = gBuildOrig.load(std::memory_order_acquire))) std::this_thread::yield();
+  Context ctx;
+  if (tInside || !gEnabled.load(std::memory_order_relaxed) || !gm || !pos || face > 5 || !context(gm, ctx))
+    return orig(gm, pos, face, hand, flag);
+
+  const Cell clicked{pos->x, pos->y, pos->z};
+  const Cell normal{clicked[0] + kFaceDir[face][0], clicked[1] + kFaceDir[face][1], clicked[2] + kFaceDir[face][2]};
+  Cell target;
+  if (!findTarget(ctx.h, ctx.h.camera, ctx.dir, &clicked, target)) {
+    if (expectedAt(*ctx.h.structure, ctx.h.origin, ctx.h.view, normal) < 0) return orig(gm, pos, face, hand, flag);
+    target = normal;  // aimed straight at a ghost block's spot
+  }
+  if (!ctx.world.isAir(target)) return false;  // already built: don't stack blocks inside the structure
+  if (!holdingRight(ctx, target, hand)) return false;
 
   if (target == normal) {
     tInside = true;
     const bool placed = orig(gm, pos, face, hand, flag);
     tInside = false;
-    return placed;
+    return afterPlace(ctx, placed);
   }
-  return placeAt(gm, player, world, target, hand, flag);
+  return afterPlace(ctx, placeAt(gm, ctx.player, ctx.world, target, hand, flag));
+}
+
+// Tapping while aiming at air: the game never calls buildBlock, so a ghost block in reach is placed here.
+bool useItemDetour(void *gm, void *stack, uint32_t flag) {
+  UseItemFn orig;
+  while (!(orig = gUseOrig.load(std::memory_order_acquire))) std::this_thread::yield();
+  Context ctx;
+  if (tInside || !gEnabled.load(std::memory_order_relaxed) || !gm || !context(gm, ctx)) return orig(gm, stack, flag);
+  Cell target;
+  if (!findTarget(ctx.h, ctx.h.camera, ctx.dir, nullptr, target)) return orig(gm, stack, flag);
+  if (!ctx.world.isAir(target)) return orig(gm, stack, flag);
+  if (!holdingRight(ctx, target, 0)) return false;
+  return afterPlace(ctx, placeAt(gm, ctx.player, ctx.world, target, 0, false));
 }
 
 bool install(pl::log::Logger &log, std::string &error) {
@@ -201,9 +249,10 @@ bool install(pl::log::Logger &log, std::string &error) {
     const char *name, *sig;
     void **out;
   };
-  void *build = nullptr;
+  void *build = nullptr, *use = nullptr;
   const Want wants[] = {
       {"BuildBlock", sig::BuildBlock, &build},
+      {"BaseUseItem", sig::BaseUseItem, &use},
       {"BlockSourceGetBlock", sig::BlockSourceGetBlock, reinterpret_cast<void **>(&gGetBlock)},
       {"ItemBlockType", sig::ItemBlockType, reinterpret_cast<void **>(&gItemBlockType)},
       {"HandItem", sig::HandItem, reinterpret_cast<void **>(&gHandItem)},
@@ -229,14 +278,22 @@ bool install(pl::log::Logger &log, std::string &error) {
   }
   gBuildOrig.store(reinterpret_cast<BuildBlockFn>(origSlot), std::memory_order_release);
   gBuildTarget = build;
+  origSlot = nullptr;
+  if (pl::memory::hook(use, reinterpret_cast<void *>(&useItemDetour), &origSlot) != 0 || !origSlot) {
+    error = "could not hook item use";
+    return false;
+  }
+  gUseOrig.store(reinterpret_cast<UseItemFn>(origSlot), std::memory_order_release);
+  gUseTarget = use;
   return true;
 }
 
 }  // namespace
 
 void installAsync(pl::log::Logger &log, std::function<void(const std::string &)> message,
-                  std::function<void(bool, const std::string &)> done) {
+                  std::function<void()> layerDone, std::function<void(bool, const std::string &)> done) {
   gMessage = std::move(message);
+  gLayerDone = std::move(layerDone);
   std::thread([&log, done = std::move(done)] {
     std::string error;
     const bool ok = install(log, error);
@@ -247,6 +304,8 @@ void installAsync(pl::log::Logger &log, std::function<void(const std::string &)>
 void uninstall() {
   if (gBuildTarget) pl::memory::unhook(gBuildTarget, reinterpret_cast<void *>(&buildBlockDetour));
   gBuildTarget = nullptr;
+  if (gUseTarget) pl::memory::unhook(gUseTarget, reinterpret_cast<void *>(&useItemDetour));
+  gUseTarget = nullptr;
 }
 
 void setEnabled(bool enabled) { gEnabled = enabled; }

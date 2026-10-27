@@ -29,6 +29,9 @@ constexpr const char *RenderMeshImmediately =
 constexpr const char *BuildBlock =
     "FF C3 04 D1 FD 7B 0D A9 FC 73 00 F9 FA 67 0F A9 F8 5F 10 A9 F6 57 11 A9 F4 4F 12 A9 FD 43 03 91 5A D0 3B D5 F7 "
     "03 04 2A";
+// GameMode::baseUseItem(ItemStack&): a tap that hits no block (aiming at air)
+constexpr const char *BaseUseItem =
+    "FD 7B BC A9 FC 5F 01 A9 F6 57 02 A9 F4 4F 03 A9 FD 03 00 91 FF 83 0C D1 57 D0 3B D5 F4 03 00 AA";
 // BlockSource::getBlock(const BlockPos&)
 constexpr const char *BlockSourceGetBlock =
     "FF 03 01 D1 FD 7B 01 A9 F6 57 02 A9 F4 4F 03 A9 FD 43 00 91 56 D0 3B D5 C8 16 40 F9 E8 07 00 F9 28 04 40 B9 09 84 "
@@ -94,6 +97,7 @@ struct HashedString {
 };
 
 using BuildBlockFn = bool (*)(void *gameMode, const BlockPos *pos, uint8_t face, uint8_t hand, bool flag);
+using UseItemFn = bool (*)(void *gameMode, void *itemStack, uint32_t flag);
 using GetBlockFn = void *(*)(void *blockSource, const BlockPos &pos);
 using ItemBlockTypeFn = BlockTypeRef (*)(const void *itemStack);
 using HandItemFn = const void *(*)(void *player, uint8_t hand);

@@ -76,6 +76,19 @@ public:
     hologram::setOpacity(opacity_ / 100.0f);
     easyplace::installAsync(
         ctx.logger(), [this](const std::string &text) { panel_.toast(text); },
+        [this] {
+          // Runs on the game thread right after a placement; the settings page is updated from here too.
+          std::lock_guard lock(mu_);
+          if (loadedName_.empty() || view_.layers != View::Layers::Single) return;
+          if (view_.layer + 1 >= loaded_.size[1]) {
+            panel_.toast("Structure complete!");
+            return;
+          }
+          ++view_.layer;
+          hologram::setView(view_);
+          panel_.toast("Layer " + std::to_string(view_.layer) + " done, now layer " + std::to_string(view_.layer + 1));
+          publishLocked();
+        },
         [this](bool ok, const std::string &error) {
           std::lock_guard lock(mu_);
           easyPlaceOk_ = ok;

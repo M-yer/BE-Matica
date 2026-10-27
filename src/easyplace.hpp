@@ -13,8 +13,9 @@ namespace bematica::easyplace {
 
 // Hooks block placement on a background thread (see hologram::installAsync for why).
 // `message` shows short feedback to the player, e.g. which block to hold.
+// `layerDone` fires when Easy Place fills the last block of the shown single layer.
 void installAsync(pl::log::Logger &log, std::function<void(const std::string &)> message,
-                  std::function<void(bool ok, const std::string &error)> done);
+                  std::function<void()> layerDone, std::function<void(bool ok, const std::string &error)> done);
 void uninstall();
 void setEnabled(bool enabled);
 
