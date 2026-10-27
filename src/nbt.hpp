@@ -6,7 +6,8 @@
 #include <string_view>
 #include <vector>
 
-// Reader for Bedrock's little-endian, uncompressed NBT (as used by .mcstructure files).
+// NBT as used by .mcstructure files (Bedrock: little-endian) and .litematic files (Java: big-endian,
+// gzipped; inflate first).
 namespace bematica::nbt {
 
 enum class Type : uint8_t {
@@ -41,7 +42,18 @@ struct Tag {
   const Tag *get(std::string_view key, Type t) const;
 };
 
+enum class Endian { Little, Big };
+
 // Parses a complete file whose root is a named Compound. On failure returns false and sets error.
-bool parse(std::span<const uint8_t> data, Tag &root, std::string &error);
+bool parse(std::span<const uint8_t> data, Tag &root, std::string &error, Endian endian = Endian::Little);
+
+// Little-endian bytes of `root` as a named root Compound. Integer lists are written with `listType`.
+std::vector<uint8_t> write(const Tag &root);
+
+// Builders for writing.
+Tag makeInt(Type type, int64_t v);
+Tag makeString(std::string s);
+Tag makeCompound();
+void put(Tag &compound, std::string key, Tag value);
 
 }  // namespace bematica::nbt

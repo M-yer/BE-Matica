@@ -74,4 +74,51 @@ bool loadMcstructure(std::span<const uint8_t> data, Structure &out, std::string 
   return true;
 }
 
+std::vector<uint8_t> saveMcstructure(const Structure &s) {
+  using namespace nbt;
+  auto intList = [](const auto &values) {
+    Tag t;
+    t.type = Type::List;
+    t.listType = Type::Int;
+    t.ints.assign(values.begin(), values.end());
+    return t;
+  };
+  Tag indices;
+  indices.type = Type::List;
+  indices.listType = Type::List;
+  for (const auto &layer : s.layers) indices.items.push_back(intList(layer));
+
+  Tag palette;
+  palette.type = Type::List;
+  palette.listType = Type::Compound;
+  for (const auto &bs : s.palette) {
+    Tag entry = makeCompound();
+    put(entry, "name", makeString(bs.name));
+    Tag states = bs.states.type == Type::Compound ? bs.states : makeCompound();
+    put(entry, "states", std::move(states));
+    put(entry, "version", makeInt(Type::Int, bs.version));
+    palette.items.push_back(std::move(entry));
+  }
+  Tag def = makeCompound();
+  put(def, "block_palette", std::move(palette));
+  put(def, "block_position_data", makeCompound());
+  Tag palettes = makeCompound();
+  put(palettes, "default", std::move(def));
+
+  Tag entities;
+  entities.type = Type::List;
+  entities.listType = Type::Compound;
+  Tag structure = makeCompound();
+  put(structure, "block_indices", std::move(indices));
+  put(structure, "entities", std::move(entities));
+  put(structure, "palette", std::move(palettes));
+
+  Tag root = makeCompound();
+  put(root, "format_version", makeInt(Type::Int, 1));
+  put(root, "size", intList(s.size));
+  put(root, "structure", std::move(structure));
+  put(root, "structure_world_origin", intList(s.origin));
+  return write(root);
+}
+
 }  // namespace bematica

@@ -1,10 +1,11 @@
 #include "nbt.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cstring>
 #include <stdexcept>
 
-static_assert(std::endian::native == std::endian::little, "NBT reader assumes a little-endian host");
+static_assert(std::endian::native == std::endian::little, "NBT code assumes a little-endian host");
 
 namespace bematica::nbt {
 namespace {
@@ -13,12 +14,15 @@ constexpr int kMaxDepth = 512;
 
 class Reader {
 public:
-  explicit Reader(std::span<const uint8_t> data) : data_(data) {}
+  Reader(std::span<const uint8_t> data, Endian endian) : data_(data), swap_(endian == Endian::Big) {}
 
   template <typename T> T read() {
     need(sizeof(T));
+    uint8_t bytes[sizeof(T)];
+    std::memcpy(bytes, data_.data() + pos_, sizeof(T));
+    if (swap_) std::reverse(bytes, bytes + sizeof(T));
     T v;
-    std::memcpy(&v, data_.data() + pos_, sizeof(T));
+    std::memcpy(&v, bytes, sizeof(T));
     pos_ += sizeof(T);
     return v;
   }
@@ -102,6 +106,68 @@ private:
 
   std::span<const uint8_t> data_;
   size_t pos_ = 0;
+  bool swap_;
+};
+
+class Writer {
+public:
+  template <typename T> void put(T v) {
+    uint8_t bytes[sizeof(T)];
+    std::memcpy(bytes, &v, sizeof(T));
+    out.insert(out.end(), bytes, bytes + sizeof(T));
+  }
+
+  void string(const std::string &s) {
+    put<uint16_t>(static_cast<uint16_t>(s.size()));
+    out.insert(out.end(), s.begin(), s.end());
+  }
+
+  void ints(const std::vector<int64_t> &v, Type t) {
+    for (int64_t x : v) {
+      switch (t) {
+      case Type::Byte: put<int8_t>(static_cast<int8_t>(x)); break;
+      case Type::Short: put<int16_t>(static_cast<int16_t>(x)); break;
+      case Type::Int: put<int32_t>(static_cast<int32_t>(x)); break;
+      default: put<int64_t>(x); break;
+      }
+    }
+  }
+
+  void payload(const Tag &tag) {
+    switch (tag.type) {
+    case Type::Byte: put<int8_t>(static_cast<int8_t>(tag.i)); break;
+    case Type::Short: put<int16_t>(static_cast<int16_t>(tag.i)); break;
+    case Type::Int: put<int32_t>(static_cast<int32_t>(tag.i)); break;
+    case Type::Long: put<int64_t>(tag.i); break;
+    case Type::Float: put<float>(static_cast<float>(tag.f)); break;
+    case Type::Double: put<double>(tag.f); break;
+    case Type::String: string(tag.s); break;
+    case Type::ByteArray: put<int32_t>(static_cast<int32_t>(tag.ints.size())); ints(tag.ints, Type::Byte); break;
+    case Type::IntArray: put<int32_t>(static_cast<int32_t>(tag.ints.size())); ints(tag.ints, Type::Int); break;
+    case Type::LongArray: put<int32_t>(static_cast<int32_t>(tag.ints.size())); ints(tag.ints, Type::Long); break;
+    case Type::List:
+      put<uint8_t>(static_cast<uint8_t>(tag.listType));
+      if (tag.items.empty()) {
+        put<int32_t>(static_cast<int32_t>(tag.ints.size()));
+        ints(tag.ints, tag.listType);
+      } else {
+        put<int32_t>(static_cast<int32_t>(tag.items.size()));
+        for (const auto &item : tag.items) payload(item);
+      }
+      break;
+    case Type::Compound:
+      for (size_t k = 0; k < tag.items.size(); ++k) {
+        put<uint8_t>(static_cast<uint8_t>(tag.items[k].type));
+        string(tag.keys[k]);
+        payload(tag.items[k]);
+      }
+      put<uint8_t>(0);
+      break;
+    case Type::End: break;
+    }
+  }
+
+  std::vector<uint8_t> out;
 };
 
 }  // namespace
@@ -118,9 +184,9 @@ const Tag *Tag::get(std::string_view key, Type t) const {
   return tag && tag->type == t ? tag : nullptr;
 }
 
-bool parse(std::span<const uint8_t> data, Tag &root, std::string &error) {
+bool parse(std::span<const uint8_t> data, Tag &root, std::string &error, Endian endian) {
   try {
-    Reader r(data);
+    Reader r(data, endian);
     if (static_cast<Type>(r.read<uint8_t>()) != Type::Compound) throw std::runtime_error("root is not a compound");
     r.readString();
     root = Tag{};
@@ -130,6 +196,39 @@ bool parse(std::span<const uint8_t> data, Tag &root, std::string &error) {
     error = e.what();
     return false;
   }
+}
+
+std::vector<uint8_t> write(const Tag &root) {
+  Writer w;
+  w.put<uint8_t>(static_cast<uint8_t>(Type::Compound));
+  w.string("");
+  w.payload(root);
+  return std::move(w.out);
+}
+
+Tag makeInt(Type type, int64_t v) {
+  Tag t;
+  t.type = type;
+  t.i = v;
+  return t;
+}
+
+Tag makeString(std::string s) {
+  Tag t;
+  t.type = Type::String;
+  t.s = std::move(s);
+  return t;
+}
+
+Tag makeCompound() {
+  Tag t;
+  t.type = Type::Compound;
+  return t;
+}
+
+void put(Tag &compound, std::string key, Tag value) {
+  compound.keys.push_back(std::move(key));
+  compound.items.push_back(std::move(value));
 }
 
 }  // namespace bematica::nbt

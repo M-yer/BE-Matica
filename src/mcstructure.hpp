@@ -33,4 +33,7 @@ struct Structure {
 
 bool loadMcstructure(std::span<const uint8_t> data, Structure &out, std::string &error);
 
+// .mcstructure bytes for `s`, loadable by a Bedrock structure block.
+std::vector<uint8_t> saveMcstructure(const Structure &s);
+
 }  // namespace bematica

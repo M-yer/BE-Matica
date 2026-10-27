@@ -1,0 +1,9 @@
+// The Java -> Bedrock block table (data/java_to_bedrock.tsv.gz), built into the library.
+  .section .rodata
+  .global bematica_block_map
+  .hidden bematica_block_map
+  .global bematica_block_map_end
+  .hidden bematica_block_map_end
+bematica_block_map:
+  .incbin "@BLOCK_MAP@"
+bematica_block_map_end:

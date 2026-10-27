@@ -4,19 +4,21 @@ An open-source, Litematica-style schematic mod for **Minecraft Bedrock Edition o
 
 Load a saved build, see it as a ghost preview in your world, and build it block by block.
 
-> **Status: early.** The mod currently loads, registers with the launcher and logs its lifecycle. No preview yet; see the roadmap.
+> **Status: early but usable.** Preview, layers, material list and Easy Place work on a test device; expect rough edges.
 
 ## Roadmap
 
 - [x] Mod skeleton that loads in LeviLaunchroid
-- [ ] Read `.mcstructure` files (Bedrock structure block exports)
-- [ ] Ghost preview of the structure in the world
-- [ ] Move, rotate and mirror the preview
-- [ ] Layer view (show one Y level at a time)
-- [ ] Material list: what blocks you need and what you're missing
+- [x] Read `.mcstructure` files (Bedrock structure block exports)
+- [x] Ghost preview of the structure in the world
+- [x] Move, rotate and mirror the preview
+- [x] Layer view (show one Y level at a time)
+- [x] Material list: what blocks you need, with a tick-off list on screen
 - [ ] Highlight missing and wrong blocks
-- [ ] **Easy Place**: tap a ghost block to place the correct block with the correct rotation/state, like Litematica's Easy Place mode
-- [ ] Java formats: `.litematic`, `.schem`, `.schematic`, `.nbt`
+- [x] **Easy Place**: tap a ghost block to place the correct block, including in mid-air (Air build)
+- [ ] Easy Place: matching rotation/state, not just the block
+- [x] Java `.litematic` import: converted to `.mcstructure` (blocks only; chest contents and entities are not carried over)
+- [ ] Other Java formats: `.schem`, `.schematic`, `.nbt`
 
 ## Install
 
@@ -33,6 +35,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md#building).
 ## Contributing
 
 Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first, especially the **clean-room rule**.
+
+## Credits
+
+- Java → Bedrock block table: [PrismarineJS/minecraft-data](https://github.com/PrismarineJS/minecraft-data) (MIT), see [data/README.md](data/README.md).
+- Sample `.litematic` test files: [schematic4j](https://github.com/SandroHc/schematic4j) (MIT), see [tests/data/litematic](tests/data/litematic).
 
 ## License
 

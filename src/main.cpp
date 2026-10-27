@@ -1,6 +1,7 @@
 #include "easyplace.hpp"
 #include "hologram.hpp"
 #include "library.hpp"
+#include "litematic.hpp"
 #include "materials_panel.hpp"
 
 #include <pl/Input.hpp>
@@ -12,6 +13,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -213,6 +215,32 @@ private:
     panel_.setLayer(view_.layer, loadedName_.empty() ? 0 : loaded_.size[1], view_.layers != View::Layers::All);
   }
 
+  // Converts a Java Litematica schematic and keeps it as <name>.mcstructure next to the others.
+  void importLitematicLocked(const std::string &path, const std::string &name) {
+    std::ifstream in(path, std::ios::binary);
+    const std::vector<uint8_t> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    Structure s;
+    LitematicInfo info;
+    std::string error;
+    if (!loadLitematic(data, s, info, error)) {
+      status_ = "Could not convert: " + error;
+      return;
+    }
+    const std::string outName = fs::path(name).stem().string() + ".mcstructure";
+    const auto bytes = saveMcstructure(s);
+    std::ofstream out(structuresDir_ / outName, std::ios::binary);
+    if (!out.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) {
+      status_ = "Could not save converted file";
+      return;
+    }
+    out.close();
+    scanLocked();
+    loadLocked(outName);
+    status_ = "Converted " + name + " to " + outName;
+    if (!info.unknownBlocks.empty())
+      status_ += " (" + std::to_string(info.unknownBlocks.size()) + " Java block types have no Bedrock match and were left out)";
+  }
+
   void importFile() {
     bool started = pl::input::openDocument("*/*", [this](const pl::input::DocumentResult &r) {
       std::lock_guard lock(mu_);
@@ -223,8 +251,10 @@ private:
         std::string name = fs::path(r.displayName.empty() ? r.path : r.displayName).filename().string();
         Structure probe;
         std::string error;
-        if (fs::path(name).extension() != ".mcstructure") {
-          status_ = "Only .mcstructure files for now";
+        if (fs::path(name).extension() == ".litematic") {
+          importLitematicLocked(r.path, name);
+        } else if (fs::path(name).extension() != ".mcstructure") {
+          status_ = "Pick a .mcstructure or .litematic file";
         } else if (!loadStructureFile(r.path, probe, error)) {
           status_ = "Not a valid structure: " + error;
         } else {
@@ -286,7 +316,7 @@ private:
     }
 
     schema.node(N{.id = "import", .key = "import", .category = "main", .title = "Import structure",
-                  .description = "Pick a .mcstructure file from your phone.", .type = T::Button});
+                  .description = "Pick a .mcstructure file, or a Java .litematic to convert, from your phone.", .type = T::Button});
 
     N file{.id = "file", .key = "file", .category = "main", .title = "Structure", .type = T::Choice,
            .choiceStyle = mm::ConfigChoiceStyleV2::Dropdown, .currentValue = loadedName_, .hasCurrentValue = true};
