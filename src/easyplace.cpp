@@ -5,6 +5,7 @@
 #include "mesh.hpp"
 
 #include <pl/Logger.hpp>
+#include <fmt/format.h>
 #include <pl/memory/Hook.hpp>
 #include <pl/memory/Signature.hpp>
 
@@ -38,8 +39,13 @@ std::function<void()> gLayerDone;
 pl::log::Logger *gLog = nullptr;
 
 // One line per tap, so a tap that "does nothing" can be explained from the log.
-template <typename... Args> void trace(std::string_view fmt, Args &&...args) {
-  if (gLog) gLog->info(fmt, std::forward<Args>(args)...);
+// Holding the button repeats placements many times a second, so identical consecutive lines are skipped.
+template <typename... Args> void trace(fmt::format_string<Args...> f, Args &&...args) {
+  static thread_local std::string last;
+  std::string line = fmt::format(f, std::forward<Args>(args)...);
+  if (!gLog || line == last) return;
+  gLog->info("{}", line);
+  last = std::move(line);
 }
 thread_local bool tInside = false;  // our own calls into buildBlock pass straight through
 
@@ -53,6 +59,13 @@ template <typename T> T at(const void *base, unsigned offset) {
   T v;
   std::memcpy(&v, static_cast<const char *>(base) + offset, sizeof(T));
   return v;
+}
+
+char *hitResultOf(void *player) {
+  void *level = at<void *>(player, off::Actor_level);
+  void **vtable = level ? at<void **>(level, 0) : nullptr;
+  auto getHit = vtable ? reinterpret_cast<GetHitResultFn>(vtable[off::Level_vtGetHitResult / sizeof(void *)]) : nullptr;
+  return getHit ? static_cast<char *>(getHit(level)) : nullptr;
 }
 
 // BlockType of a block name's default state. Only touched on the game thread.
@@ -123,10 +136,7 @@ bool placeAt(void *gm, void *player, const World &w, const Cell &target, uint8_t
     const float hit[3] = {n[0] + 0.5f + 0.5f * kFaceDir[face][0], n[1] + 0.5f + 0.5f * kFaceDir[face][1],
                           n[2] + 0.5f + 0.5f * kFaceDir[face][2]};
 
-    void *level = at<void *>(player, off::Actor_level);
-    void **vtable = level ? at<void **>(level, 0) : nullptr;
-    auto getHit = vtable ? reinterpret_cast<GetHitResultFn>(vtable[off::Level_vtGetHitResult / sizeof(void *)]) : nullptr;
-    char *hr = getHit ? static_cast<char *>(getHit(level)) : nullptr;
+    char *hr = hitResultOf(player);
 
     uint8_t savedHr[0x20];
     float savedAlt[3];
@@ -161,23 +171,28 @@ struct Context {
   hologram::Snapshot h;
   void *player = nullptr;
   World world{};
-  Vec3f dir{};
+  Vec3f eye{}, dir{};
 };
+
 
 // Everything Easy Place needs about the player and world, or false to leave the tap to the game.
 bool context(void *gm, Context &ctx) {
   ctx.h = hologram::snapshot();
   ctx.player = at<void *>(gm, off::GameMode_player);
-  if (!ctx.h.structure || !ctx.h.haveCamera || !ctx.player) return false;
+  if (!ctx.h.structure || !ctx.player) return false;
   void *dimension = at<void *>(ctx.player, off::Actor_dimension);
   void *source = dimension ? at<void *>(dimension, off::Dimension_blockSource) : nullptr;
   const void *air = blockTypeOf("minecraft:air");
   if (!source || !air) return false;
   ctx.world = {source, air};
-  // View direction from the player's pitch and yaw (degrees; yaw 0 faces +z).
-  const auto rot = at<std::array<float, 2>>(ctx.player, off::Actor_rotation);
-  const float pitch = rot[0] * static_cast<float>(M_PI) / 180, yaw = rot[1] * static_cast<float>(M_PI) / 180;
-  ctx.dir = {-std::sin(yaw) * std::cos(pitch), -std::sin(pitch), std::cos(yaw) * std::cos(pitch)};
+  // The game's own aim ray (what the crosshair is pointing along), from the current hit result.
+  const char *hr = hitResultOf(ctx.player);
+  if (!hr) return false;
+  ctx.eye = at<Vec3f>(hr, off::HitResult_rayStart);
+  const Vec3f d = at<Vec3f>(hr, off::HitResult_rayDir);
+  const float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+  if (!(len > 1e-4f) || !std::isfinite(ctx.eye.x)) return false;
+  ctx.dir = {d.x / len, d.y / len, d.z / len};
   return true;
 }
 
@@ -222,12 +237,12 @@ bool buildBlockDetour(void *gm, const BlockPos *pos, uint8_t face, uint8_t hand,
     return orig(gm, pos, face, hand, flag);
   }
   trace("EasyPlace build: clicked {} {} {} face {} cam {:.1f} {:.1f} {:.1f} dir {:.2f} {:.2f} {:.2f}", pos->x, pos->y,
-        pos->z, face, ctx.h.camera.x, ctx.h.camera.y, ctx.h.camera.z, ctx.dir.x, ctx.dir.y, ctx.dir.z);
+        pos->z, face, ctx.eye.x, ctx.eye.y, ctx.eye.z, ctx.dir.x, ctx.dir.y, ctx.dir.z);
 
   const Cell clicked{pos->x, pos->y, pos->z};
   const Cell normal{clicked[0] + kFaceDir[face][0], clicked[1] + kFaceDir[face][1], clicked[2] + kFaceDir[face][2]};
   Cell target;
-  if (!findTarget(ctx.h, ctx.h.camera, ctx.dir, &clicked, target)) {
+  if (!findTarget(ctx.h, ctx.eye, ctx.dir, &clicked, target)) {
     if (expectedAt(*ctx.h.structure, ctx.h.origin, ctx.h.view, normal) < 0) {
       trace("EasyPlace build: no ghost block on the view ray, vanilla placement");
       return orig(gm, pos, face, hand, flag);
@@ -264,9 +279,9 @@ bool useItemDetour(void *gm, void *stack, uint32_t flag) {
     return orig(gm, stack, flag);
   }
   Cell target;
-  if (!findTarget(ctx.h, ctx.h.camera, ctx.dir, nullptr, target)) {
+  if (!findTarget(ctx.h, ctx.eye, ctx.dir, nullptr, target)) {
     trace("EasyPlace air: no ghost block within reach (cam {:.1f} {:.1f} {:.1f} dir {:.2f} {:.2f} {:.2f})",
-          ctx.h.camera.x, ctx.h.camera.y, ctx.h.camera.z, ctx.dir.x, ctx.dir.y, ctx.dir.z);
+          ctx.eye.x, ctx.eye.y, ctx.eye.z, ctx.dir.x, ctx.dir.y, ctx.dir.z);
     return orig(gm, stack, flag);
   }
   if (!ctx.world.isAir(target)) return orig(gm, stack, flag);

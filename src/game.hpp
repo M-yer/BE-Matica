@@ -62,9 +62,9 @@ constexpr unsigned GameMode_hasAltHit = 0x41;   // bool: the hit position below 
 constexpr unsigned GameMode_altHitPos = 0x6C;   // Vec3
 constexpr unsigned Actor_level = 0x1D0;
 constexpr unsigned Actor_dimension = 0x1C0;
-constexpr unsigned Actor_rotation = 0x218;      // Vec2 pitch, yaw in degrees
 constexpr unsigned Dimension_blockSource = 0xD0;
 constexpr unsigned Level_vtGetHitResult = 0xA80; // vtable byte offset
+constexpr unsigned HitResult_rayStart = 0x0, HitResult_rayDir = 0xC;  // Vec3 each: the player's aim ray
 constexpr unsigned HitResult_type = 0x18, HitResult_face = 0x1C, HitResult_pos = 0x20, HitResult_hitPos = 0x2C;
 constexpr unsigned Block_blockType = 0x68;
 }  // namespace off

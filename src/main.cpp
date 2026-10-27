@@ -276,27 +276,25 @@ private:
 
     if (hologramOk_) {
       schema.node(N{.id = "hologram", .key = "hologram", .category = "main", .title = "Show hologram",
-                    .type = T::Toggle, .defaultValue = "true", .currentValue = hologramOn_ ? "true" : "false",
-                    .hasCurrentValue = true});
+                    .type = T::Toggle, .defaultValue = "true"});
+      // Toggles and sliders don't send a current value: the launcher keeps the user's saved choice and
+      // replays it through onConfigChanged, where sending our default would overwrite it.
       if (easyPlaceOk_)
         schema.node(N{.id = "easyplace", .key = "easyplace", .category = "main", .title = "Easy Place",
                       .description = "Tap where a ghost block is to place it there. Only the right block is "
                                      "placed: hold it in your hand.",
-                      .type = T::Toggle, .defaultValue = "false", .currentValue = easyPlaceOn_ ? "true" : "false",
-                      .hasCurrentValue = true});
+                      .type = T::Toggle, .defaultValue = "false"});
       schema.node(N{.id = "move", .key = "move", .category = "main", .title = "Move hologram to me",
                     .description = "Puts the structure's corner where you stand.", .type = T::Button});
       schema.node(N{.id = "opacity", .key = "opacity", .category = "main", .title = "Hologram opacity",
-                    .type = T::SliderInt, .defaultValue = "45", .currentValue = std::to_string(opacity_),
-                    .hasCurrentValue = true, .minValue = "10", .maxValue = "100", .step = "5", .unit = "%"});
+                    .type = T::SliderInt, .defaultValue = "45", .minValue = "10", .maxValue = "100", .step = "5", .unit = "%"});
       if (!loadedName_.empty()) addPlacementNodes(schema);
     }
     schema.node(N{.id = "refresh", .key = "refresh", .category = "main", .title = "Refresh list",
                   .description = "Rescan " + structuresDir_.string().substr(8), .type = T::Button});
     schema.node(N{.id = "overlay", .key = "overlay", .category = "main", .title = "Blocks button on screen",
                   .description = "Opens a scrollable block list while you build. Tap a block to tick it off.",
-                  .type = T::Toggle, .defaultValue = "false", .currentValue = overlay_ ? "true" : "false",
-                  .hasCurrentValue = true});
+                  .type = T::Toggle, .defaultValue = "false"});
     if (!status_.empty())
       schema.node(N{.id = "status", .category = "main", .title = status_, .type = T::Info});
 
