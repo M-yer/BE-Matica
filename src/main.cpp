@@ -69,7 +69,7 @@ public:
                   })
                   .registerModule();
     if (!ok) ctx.logger().warn("BE-Matica: menu registration failed");
-    panel_.init(kModule, ctx.id());
+    panel_.init(kModule, ctx.id(), [this](std::string_view key, std::string_view value) { onSetting(key, value); });
     const auto surface = mm::getHudSurfaceSize();
     ctx.logger().info("BE-Matica: HUD surface {}x{}", surface.width, surface.height);
 
@@ -205,7 +205,12 @@ private:
       return false;
     }
     hologram::setView(view_);
+    syncLayerLocked();
     return true;
+  }
+
+  void syncLayerLocked() {
+    panel_.setLayer(view_.layer, loadedName_.empty() ? 0 : loaded_.size[1], view_.layers != View::Layers::All);
   }
 
   void importFile() {
@@ -269,6 +274,7 @@ private:
 
   // Rebuilds the settings page (the file list and material list change at runtime) and the overlay.
   void publishLocked() {
+    syncLayerLocked();
     using N = mm::ConfigNodeV2;
     using T = mm::ConfigControlTypeV2;
     mm::ConfigSchemaBuilder schema;

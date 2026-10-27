@@ -2,6 +2,7 @@
 
 #include <pl/ModMenu.hpp>
 
+#include <android/log.h>
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -42,9 +43,11 @@ std::string countText(size_t n) {
 
 }  // namespace
 
-void MaterialsPanel::init(std::string moduleId, std::string modId) {
+void MaterialsPanel::init(std::string moduleId, std::string modId,
+                          std::function<void(std::string_view, std::string_view)> control) {
   moduleId_ = std::move(moduleId);
   modId_ = std::move(modId);
+  control_ = std::move(control);
   pl::input::registerTouchCallback([this](const pl::input::TouchEvent &e) { return onTouch(e); });
 }
 
@@ -74,10 +77,13 @@ void MaterialsPanel::setVisible(bool visible) {
                             .modId(modId_)
                             .label("Blocks")
                             .svgIcon(kChestIcon)
+                            .sizeScale(1.0f, 1.0f)
                             .onEvent([this](std::string_view, mm::ButtonEvent e, float) {
                               if (e == mm::ButtonEvent::Click) toggleOpen();
                             })
                             .registerButton();
+    // A rejected button fails silently in the launcher; this shows it in logcat.
+    if (!buttonRegistered_) __android_log_print(ANDROID_LOG_WARN, "BE-Matica", "Blocks button was not registered");
   } else if (!visible && buttonRegistered_) {
     mm::unregisterButton(kButtonId);
     buttonRegistered_ = false;
@@ -104,6 +110,13 @@ void MaterialsPanel::toast(std::string text) {
   }).detach();
 }
 
+void MaterialsPanel::setLayer(int layer, int layerCount, bool single) {
+  std::lock_guard lock(mu_);
+  if (layer == layer_ && layerCount == layerCount_ && single == single_) return;
+  layer_ = layer, layerCount_ = layerCount, single_ = single;
+  redrawLocked();
+}
+
 void MaterialsPanel::toggleOpen() {
   std::lock_guard lock(mu_);
   open_ = !open_;
@@ -115,37 +128,46 @@ bool MaterialsPanel::insideLocked(float x, float y) const {
 }
 
 bool MaterialsPanel::onTouch(const pl::input::TouchEvent &e) {
-  std::lock_guard lock(mu_);
-  const int action = e.action & 0xff;
-  if (activePointer_ < 0) {
-    if ((action == kDown || action == kPointerDown) && insideLocked(e.x, e.y)) {
-      activePointer_ = e.pointerId;
-      downY_ = lastY_ = e.y;
-      dragged_ = false;
+  std::string key, value;  // a tapped control, run once the lock is released
+  {
+    std::lock_guard lock(mu_);
+    const int action = e.action & 0xff;
+    if (activePointer_ < 0) {
+      if ((action == kDown || action == kPointerDown) && insideLocked(e.x, e.y)) {
+        activePointer_ = e.pointerId;
+        downY_ = lastY_ = e.y;
+        dragged_ = false;
+        return true;
+      }
+      return false;
+    }
+    if (e.pointerId != activePointer_) return insideLocked(e.x, e.y);
+
+    if (action == kMove) {
+      if (downY_ > listTop_ && std::abs(e.y - downY_) > row_ * 0.3f) dragged_ = true;
+      if (dragged_) {
+        scroll_ -= e.y - lastY_;
+        redrawLocked();
+      }
+      lastY_ = e.y;
       return true;
     }
-    return false;
-  }
-  if (e.pointerId != activePointer_) return insideLocked(e.x, e.y);
-
-  if (action == kMove) {
-    if (std::abs(e.y - downY_) > row_ * 0.3f) dragged_ = true;
-    if (dragged_) {
-      scroll_ -= e.y - lastY_;
-      redrawLocked();
-    }
-    lastY_ = e.y;
-  } else if (action == kUp || action == kPointerUp || action == kCancel) {
-    if (!dragged_ && action != kCancel && e.y > y_ + headerH_) {
-      const auto idx = static_cast<size_t>((e.y - y_ - headerH_ + scroll_) / row_);
+    if (action != kUp && action != kPointerUp && action != kCancel) return true;
+    activePointer_ = -1;
+    if (dragged_ || action == kCancel) return true;
+    for (const auto &c : controls_)
+      if (e.x >= c.x && e.x <= c.x + c.w && e.y >= c.y && e.y <= c.y + c.h) key = c.key, value = c.value;
+    if (key.empty() && e.y > listTop_) {
+      const auto idx = static_cast<size_t>((e.y - listTop_ + scroll_) / row_);
       if (idx < materials_.size()) {
         const auto &name = materials_[idx].name;
         if (!done_.erase(name)) done_.insert(name);
         redrawLocked();
       }
     }
-    activePointer_ = -1;
   }
+  // The callback locks the mod, which calls back into this panel.
+  if (!key.empty() && control_) control_(key, value);
   return true;
 }
 
@@ -167,12 +189,37 @@ void MaterialsPanel::redrawLocked() {
     row_ = font * 1.55f;
     headerH_ = row_ * 1.4f;
     w_ = std::min(sw * 0.36f, font * 20);
-    h_ = sh * 0.66f;
+    h_ = sh * 0.74f;
     x_ = sw * 0.02f;
     y_ = sh * 0.14f;
 
+    // Controls: [<] Layer n/m [>] [All], then [Move up] [Move down].
+    controls_.clear();
+    const float pad = font * 0.4f, ctrlH = row_ * 1.15f, rowY1 = y_ + headerH_ + pad, rowY2 = rowY1 + ctrlH + pad;
+    const float unit = (w_ - pad * 5) / 6;  // row 1: arrow, label (3 units), arrow, All
+    auto button = [&](float bx, float by, float bw, const std::string &text, const char *key, const char *value,
+                      bool active) {
+      cmds.push_back({.type = mm::DrawCommandType::RectFilled, .x = bx, .y = by, .w = bw, .h = ctrlH,
+                      .color = active ? 0xFF2F7D5B : 0xFF3A4048});
+      cmds.push_back({.type = mm::DrawCommandType::Text, .x = bx + (bw - font * 0.55f * text.size()) / 2,
+                      .y = by + (ctrlH - font) / 2, .color = 0xFFFFFFFF, .size = font, .text = text});
+      controls_.push_back({bx, by, bw, ctrlH, key, value});
+    };
+    const std::string layerText = single_ ? "Layer " + std::to_string(layer_ + 1) + "/" + std::to_string(layerCount_)
+                                          : "All " + std::to_string(layerCount_) + " layers";
+    button(x_ + pad, rowY1, unit, "<", "layer_down", "", false);
+    cmds.push_back({.type = mm::DrawCommandType::Text,
+                    .x = x_ + pad * 2 + unit + (unit * 3 - font * 0.55f * layerText.size()) / 2,
+                    .y = rowY1 + (ctrlH - font) / 2, .color = 0xFFFFFFFF, .size = font, .text = layerText});
+    button(x_ + pad * 3 + unit * 4, rowY1, unit, ">", "layer_up", "", false);
+    button(x_ + pad * 4 + unit * 5, rowY1, unit, "All", "layers", "all", !single_);
+    const float half = (w_ - pad * 3) / 2;
+    button(x_ + pad, rowY2, half, "Move up", "up", "", false);
+    button(x_ + pad * 2 + half, rowY2, half, "Move down", "down", "", false);
+    listTop_ = rowY2 + ctrlH + pad;
+
     const float contentH = row_ * materials_.size();
-    const float maxScroll = std::max(0.0f, contentH - (h_ - headerH_));
+    const float maxScroll = std::max(0.0f, contentH - (y_ + h_ - listTop_));
     scroll_ = std::clamp(scroll_, 0.0f, maxScroll);
 
     cmds.push_back({.type = mm::DrawCommandType::RectFilled, .x = x_, .y = y_, .w = w_, .h = h_, .color = 0xD8101418});
@@ -182,7 +229,7 @@ void MaterialsPanel::redrawLocked() {
                     .color = 0xFFFFFFFF, .size = font,
                     .text = title_ + "   " + std::to_string(done_.size()) + "/" + std::to_string(materials_.size())});
 
-    const float top = y_ + headerH_;
+    const float top = listTop_;
     const size_t first = static_cast<size_t>(scroll_ / row_);
     for (size_t k = first; k < materials_.size(); ++k) {
       const float ry = top + k * row_ - scroll_;
@@ -198,7 +245,7 @@ void MaterialsPanel::redrawLocked() {
     }
 
     if (maxScroll > 0) {  // scrollbar
-      const float trackH = h_ - headerH_, barH = std::max(row_, trackH * trackH / contentH);
+      const float trackH = y_ + h_ - listTop_, barH = std::max(row_, trackH * trackH / contentH);
       cmds.push_back({.type = mm::DrawCommandType::RectFilled, .x = x_ + w_ - font * 0.3f,
                       .y = top + (trackH - barH) * (scroll_ / maxScroll), .w = font * 0.2f, .h = barH,
                       .color = 0x80FFFFFF});
