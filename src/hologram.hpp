@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mcstructure.hpp"
+#include "mesh.hpp"
 
 #include <array>
 #include <functional>
@@ -22,6 +23,8 @@ void uninstall();
 // Shows `s` in the world. If `atPlayer` is set, it is placed at the player's feet on the next frame.
 void show(std::shared_ptr<const Structure> s, bool atPlayer);
 void moveToPlayer();
+void nudge(int dx, int dy, int dz);
+void setView(const View &view);
 void setVisible(bool visible);
 void setOpacity(float alpha);  // 0..1
 

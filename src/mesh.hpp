@@ -26,8 +26,19 @@ struct HologramMesh {
   std::vector<Line> lines;  // outline of the whole structure
 };
 
-// Faces between two structure blocks are hidden, so only the outer shell of each solid area is drawn.
-// Blocks are tinted by name so different materials are easy to tell apart.
-HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, size_t maxQuads);
+struct View {
+  int rotation = 0;     // quarter turns clockwise seen from above, 0..3
+  bool mirror = false;  // flip along X before rotating
+  enum class Layers { All, Single, UpTo } layers = Layers::All;
+  int layer = 0;        // structure Y level used by Single / UpTo
+};
+
+// Size of the structure after rotation (x and z swap on quarter turns).
+std::array<int, 3> viewSize(const Structure &s, const View &v);
+
+// Faces between two shown blocks are hidden, so only the outer shell of each solid area is drawn.
+// Blocks are tinted by name so different materials are easy to tell apart. `origin` is the world
+// position of the transformed structure's minimum corner.
+HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, const View &view, size_t maxQuads);
 
 }  // namespace bematica

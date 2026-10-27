@@ -117,6 +117,8 @@ private:
     } else if (key == "move") {
       hologram::moveToPlayer();
       status_ = "Hologram moved to you";
+    } else if (onPlacementLocked(key, value)) {
+      return;  // hologram-only change; the page stays as it is
     } else if (key == "opacity") {
       opacity_ = std::clamp(std::atoi(std::string(value).c_str()), 10, 100);
       hologram::setOpacity(opacity_ / 100.0f);
@@ -125,6 +127,42 @@ private:
       return;
     }
     publishLocked();
+  }
+
+  // Nudge, rotate, mirror and layer controls. Returns false if `key` isn't one of them.
+  bool onPlacementLocked(std::string_view key, std::string_view value) {
+    static constexpr struct {
+      const char *key;
+      int dx, dy, dz;
+    } kNudges[] = {{"east", 1, 0, 0}, {"west", -1, 0, 0}, {"up", 0, 1, 0},
+                   {"down", 0, -1, 0}, {"south", 0, 0, 1}, {"north", 0, 0, -1}};
+    for (const auto &n : kNudges)
+      if (key == n.key) {
+        hologram::nudge(n.dx, n.dy, n.dz);
+        return true;
+      }
+    const int maxLayer = loadedName_.empty() ? 0 : loaded_.size[1] - 1;
+    if (key == "rotate") {
+      view_.rotation = (view_.rotation + 1) % 4;
+    } else if (key == "mirror") {
+      view_.mirror = !view_.mirror;
+    } else if (key == "layers") {
+      view_.layers = value == "single" ? View::Layers::Single
+                     : value == "upto" ? View::Layers::UpTo
+                                       : View::Layers::All;
+    } else if (key == "layer") {
+      view_.layer = std::clamp(std::atoi(std::string(value).c_str()) - 1, 0, maxLayer);
+    } else if (key == "layer_up" || key == "layer_down") {
+      view_.layer = std::clamp(view_.layer + (key == "layer_up" ? 1 : -1), 0, maxLayer);
+      if (view_.layers == View::Layers::All) view_.layers = View::Layers::Single;
+      hologram::setView(view_);
+      publishLocked();  // keeps the layer slider in step with the buttons
+      return true;
+    } else {
+      return false;
+    }
+    hologram::setView(view_);
+    return true;
   }
 
   void importFile() {
@@ -180,6 +218,8 @@ private:
     materials_ = countMaterials(loaded_);
     status_ = "Loaded " + name;
     panel_.setContent(name.substr(0, name.rfind('.')), materials_);
+    view_ = View{};
+    hologram::setView(view_);
     hologram::show(std::make_shared<const Structure>(loaded_), true);
     ctx_->logger().info("BE-Matica: loaded {} ({})", name, sizeText(loaded_));
   }
@@ -209,6 +249,7 @@ private:
       schema.node(N{.id = "opacity", .key = "opacity", .category = "main", .title = "Hologram opacity",
                     .type = T::SliderInt, .defaultValue = "45", .currentValue = std::to_string(opacity_),
                     .hasCurrentValue = true, .minValue = "10", .maxValue = "100", .step = "5", .unit = "%"});
+      if (!loadedName_.empty()) addPlacementNodes(schema);
     }
     schema.node(N{.id = "refresh", .key = "refresh", .category = "main", .title = "Refresh list",
                   .description = "Rescan " + structuresDir_.string().substr(8), .type = T::Button});
@@ -240,12 +281,43 @@ private:
     syncPanelLocked();
   }
 
+  void addPlacementNodes(mm::ConfigSchemaBuilder &schema) {
+    using N = mm::ConfigNodeV2;
+    using T = mm::ConfigControlTypeV2;
+    const std::pair<const char *, const char *> moves[] = {
+        {"up", "Move up"},         {"down", "Move down"},       {"north", "Move north (-Z)"},
+        {"south", "Move south (+Z)"}, {"west", "Move west (-X)"}, {"east", "Move east (+X)"},
+        {"rotate", "Rotate 90\u00B0"}, {"mirror", "Mirror"}};
+    for (const auto &[key, title] : moves)
+      schema.node(N{.id = key, .key = key, .category = "main", .title = title, .section = "Placement",
+                    .type = T::Button});
+
+    const char *mode = view_.layers == View::Layers::Single ? "single"
+                       : view_.layers == View::Layers::UpTo ? "upto"
+                                                            : "all";
+    N layers{.id = "layers", .key = "layers", .category = "main", .title = "Show", .section = "Layers",
+             .type = T::Choice, .choiceStyle = mm::ConfigChoiceStyleV2::Segmented, .defaultValue = "all",
+             .currentValue = mode, .hasCurrentValue = true};
+    layers.options = {{.value = "all", .label = "All"}, {.value = "single", .label = "One layer"},
+                      {.value = "upto", .label = "Up to layer"}};
+    schema.node(std::move(layers));
+    schema.node(N{.id = "layer", .key = "layer", .category = "main", .title = "Layer", .section = "Layers",
+                  .type = T::SliderInt, .defaultValue = "1", .currentValue = std::to_string(view_.layer + 1),
+                  .hasCurrentValue = true, .minValue = "1", .maxValue = std::to_string(loaded_.size[1]),
+                  .step = "1"});
+    schema.node(N{.id = "layer_up", .key = "layer_up", .category = "main", .title = "Layer up",
+                  .section = "Layers", .type = T::Button});
+    schema.node(N{.id = "layer_down", .key = "layer_down", .category = "main", .title = "Layer down",
+                  .section = "Layers", .type = T::Button});
+  }
+
   void syncPanelLocked() { panel_.setVisible(enabled_ && overlay_ && !loadedName_.empty()); }
 
   pl::mod::ModContext *ctx_ = nullptr;
   MaterialsPanel panel_;
   bool hologramOk_ = false, hologramOn_ = true;
   int opacity_ = 45;
+  View view_;
   fs::path structuresDir_;
   // Recursive: the launcher may call back into onSetting while a settings page is being set.
   std::recursive_mutex mu_;

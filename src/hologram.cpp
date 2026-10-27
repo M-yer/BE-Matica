@@ -36,6 +36,7 @@ std::mutex gMu;
 std::shared_ptr<const Structure> gStructure;
 std::shared_ptr<const HologramMesh> gMesh;
 std::array<int, 3> gOrigin{};
+View gView;
 std::atomic_bool gPlaceAtPlayer{false};
 std::atomic_bool gVisible{true};
 std::atomic<float> gAlpha{0.45f};
@@ -43,7 +44,7 @@ std::atomic<float> gAlpha{0.45f};
 bool finite(const Vec3f &v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
 
 void rebuildLocked() {
-  gMesh = gStructure ? std::make_shared<const HologramMesh>(buildMesh(*gStructure, gOrigin, kMaxQuads)) : nullptr;
+  gMesh = gStructure ? std::make_shared<const HologramMesh>(buildMesh(*gStructure, gOrigin, gView, kMaxQuads)) : nullptr;
 }
 
 void submit(void *screenContext, void *tess, void *material) {
@@ -196,6 +197,18 @@ void show(std::shared_ptr<const Structure> s, bool atPlayer) {
 }
 
 void moveToPlayer() { gPlaceAtPlayer = true; }
+
+void nudge(int dx, int dy, int dz) {
+  std::lock_guard lock(gMu);
+  gOrigin[0] += dx, gOrigin[1] += dy, gOrigin[2] += dz;
+  rebuildLocked();
+}
+
+void setView(const View &view) {
+  std::lock_guard lock(gMu);
+  gView = view;
+  rebuildLocked();
+}
 void setVisible(bool visible) { gVisible = visible; }
 void setOpacity(float alpha) { gAlpha = std::clamp(alpha, 0.05f, 1.0f); }
 

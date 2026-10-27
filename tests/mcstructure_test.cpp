@@ -157,10 +157,33 @@ int main(int argc, char **argv) {
   CHECK(mats.size() == 3 && mats[0].name == "oak_stairs" && mats[0].count == 1);
 
   // Mesh: stone at (0,0,0) and stairs at (1,0,0) touch, so each loses one face: 5 + 5 visible faces.
-  auto mesh = buildMesh(s, {100, 64, -3}, 1000);
+  auto mesh = buildMesh(s, {100, 64, -3}, {}, 1000);
   CHECK(mesh.quads.size() == 10);
   CHECK(mesh.lines.size() == 12);
   CHECK(mesh.quads[0].v[0].x >= 100 && mesh.quads[0].v[0].y >= 64);
+
+  // Rotated or mirrored, every vertex must stay inside the (possibly swapped) bounding box.
+  for (int rot = 0; rot < 4; ++rot)
+    for (bool mirror : {false, true}) {
+      View v{.rotation = rot, .mirror = mirror};
+      auto m = buildMesh(s, {0, 0, 0}, v, 1000);
+      auto size = viewSize(s, v);
+      CHECK(m.quads.size() == 10);
+      for (const auto &q : m.quads)
+        for (const auto &p : q.v)
+          CHECK(p.x >= 0 && p.x <= size[0] && p.y >= 0 && p.y <= size[1] && p.z >= 0 && p.z <= size[2]);
+    }
+  // A quarter turn moves the block at x=1 (stairs) onto z=1 in the rotated frame.
+  {
+    View v{.rotation = 1};
+    auto m = buildMesh(s, {0, 0, 0}, v, 1000);
+    bool stairsAtZ1 = false;
+    for (const auto &q : m.quads)
+      if (q.r == mesh.quads[5].r && q.g == mesh.quads[5].g && q.v[0].z >= 1) stairsAtZ1 = true;
+    CHECK(stairsAtZ1);
+  }
+  // Single layer above the structure hides everything.
+  CHECK(buildMesh(s, {0, 0, 0}, View{.layers = View::Layers::Single, .layer = 5}, 1000).quads.empty());
 
   // Every truncation of a valid file must fail cleanly, never crash.
   for (size_t n = 0; n < good.size(); ++n) {
