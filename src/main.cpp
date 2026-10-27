@@ -230,6 +230,10 @@ private:
     using T = mm::ConfigControlTypeV2;
     mm::ConfigSchemaBuilder schema;
     schema.category("main", "BE-Matica").defaultCategory("main");
+    if (!loadedName_.empty()) {
+      if (hologramOk_) schema.category("place", "Placement & Layers");
+      schema.category("materials", "Materials");
+    }
 
     schema.node(N{.id = "import", .key = "import", .category = "main", .title = "Import structure",
                   .description = "Pick a .mcstructure file from your phone.", .type = T::Button});
@@ -263,14 +267,14 @@ private:
     if (!loadedName_.empty()) {
       size_t total = 0;
       for (const auto &m : materials_) total += m.count;
-      schema.node(N{.id = "materials", .category = "main",
+      schema.node(N{.id = "materials", .category = "materials",
                     .title = loadedName_ + "  (" + sizeText(loaded_) + ", " + std::to_string(total) + " blocks)",
                     .section = "Materials", .type = T::Info});
       // One row per block: the launcher caps a single description at 1024 characters, and it stays under
       // its 512-node limit with room for the controls above.
       constexpr size_t kMaxRows = 400;
       for (size_t k = 0; k < materials_.size() && k < kMaxRows; ++k)
-        schema.node(N{.id = "m" + std::to_string(k), .category = "main",
+        schema.node(N{.id = "m" + std::to_string(k), .category = "materials",
                       .title = std::to_string(materials_[k].count) + "   " + materials_[k].name, .section = "Materials",
                       .type = T::Info});
     }
@@ -289,25 +293,25 @@ private:
         {"south", "Move south (+Z)"}, {"west", "Move west (-X)"}, {"east", "Move east (+X)"},
         {"rotate", "Rotate 90\u00B0"}, {"mirror", "Mirror"}};
     for (const auto &[key, title] : moves)
-      schema.node(N{.id = key, .key = key, .category = "main", .title = title, .section = "Placement",
+      schema.node(N{.id = key, .key = key, .category = "place", .title = title, .section = "Placement",
                     .type = T::Button});
 
     const char *mode = view_.layers == View::Layers::Single ? "single"
                        : view_.layers == View::Layers::UpTo ? "upto"
                                                             : "all";
-    N layers{.id = "layers", .key = "layers", .category = "main", .title = "Show", .section = "Layers",
+    N layers{.id = "layers", .key = "layers", .category = "place", .title = "Show", .section = "Layers",
              .type = T::Choice, .choiceStyle = mm::ConfigChoiceStyleV2::Segmented, .defaultValue = "all",
              .currentValue = mode, .hasCurrentValue = true};
     layers.options = {{.value = "all", .label = "All"}, {.value = "single", .label = "One layer"},
                       {.value = "upto", .label = "Up to layer"}};
     schema.node(std::move(layers));
-    schema.node(N{.id = "layer", .key = "layer", .category = "main", .title = "Layer", .section = "Layers",
+    schema.node(N{.id = "layer", .key = "layer", .category = "place", .title = "Layer", .section = "Layers",
                   .type = T::SliderInt, .defaultValue = "1", .currentValue = std::to_string(view_.layer + 1),
                   .hasCurrentValue = true, .minValue = "1", .maxValue = std::to_string(loaded_.size[1]),
                   .step = "1"});
-    schema.node(N{.id = "layer_up", .key = "layer_up", .category = "main", .title = "Layer up",
+    schema.node(N{.id = "layer_up", .key = "layer_up", .category = "place", .title = "Layer up",
                   .section = "Layers", .type = T::Button});
-    schema.node(N{.id = "layer_down", .key = "layer_down", .category = "main", .title = "Layer down",
+    schema.node(N{.id = "layer_down", .key = "layer_down", .category = "place", .title = "Layer down",
                   .section = "Layers", .type = T::Button});
   }
 
