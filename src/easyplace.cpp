@@ -35,6 +35,12 @@ BlockLookupFn gLookup = nullptr;
 std::atomic_bool gEnabled{false};
 std::function<void(const std::string &)> gMessage;
 std::function<void()> gLayerDone;
+pl::log::Logger *gLog = nullptr;
+
+// One line per tap, so a tap that "does nothing" can be explained from the log.
+template <typename... Args> void trace(std::string_view fmt, Args &&...args) {
+  if (gLog) gLog->info(fmt, std::forward<Args>(args)...);
+}
 thread_local bool tInside = false;  // our own calls into buildBlock pass straight through
 
 // Bedrock block faces: down, up, north (-z), south (+z), west (-x), east (+x).
@@ -141,6 +147,7 @@ bool placeAt(void *gm, void *player, const World &w, const Cell &target, uint8_t
     tInside = true;
     const bool placed = gBuildOrig.load()(gm, &pos, face, hand, flag);
     tInside = false;
+    trace("EasyPlace: clicked support {} {} {} face {} -> {}", n[0], n[1], n[2], face, placed ? "placed" : "rejected");
 
     if (hr) std::memcpy(hr + off::HitResult_type, savedHr, sizeof(savedHr));
     if (alt && !placed) std::memcpy(static_cast<char *>(gm) + off::GameMode_altHitPos, savedAlt, sizeof(savedAlt));
@@ -208,19 +215,34 @@ bool afterPlace(const Context &ctx, bool placed) {
 bool buildBlockDetour(void *gm, const BlockPos *pos, uint8_t face, uint8_t hand, bool flag) {
   BuildBlockFn orig;
   while (!(orig = gBuildOrig.load(std::memory_order_acquire))) std::this_thread::yield();
+  if (tInside) return orig(gm, pos, face, hand, flag);
   Context ctx;
-  if (tInside || !gEnabled.load(std::memory_order_relaxed) || !gm || !pos || face > 5 || !context(gm, ctx))
+  if (!gEnabled.load(std::memory_order_relaxed) || !gm || !pos || face > 5 || !context(gm, ctx)) {
+    trace("EasyPlace build: pass (enabled={} context={})", gEnabled.load(), gm && pos && face <= 5);
     return orig(gm, pos, face, hand, flag);
+  }
+  trace("EasyPlace build: clicked {} {} {} face {} cam {:.1f} {:.1f} {:.1f} dir {:.2f} {:.2f} {:.2f}", pos->x, pos->y,
+        pos->z, face, ctx.h.camera.x, ctx.h.camera.y, ctx.h.camera.z, ctx.dir.x, ctx.dir.y, ctx.dir.z);
 
   const Cell clicked{pos->x, pos->y, pos->z};
   const Cell normal{clicked[0] + kFaceDir[face][0], clicked[1] + kFaceDir[face][1], clicked[2] + kFaceDir[face][2]};
   Cell target;
   if (!findTarget(ctx.h, ctx.h.camera, ctx.dir, &clicked, target)) {
-    if (expectedAt(*ctx.h.structure, ctx.h.origin, ctx.h.view, normal) < 0) return orig(gm, pos, face, hand, flag);
+    if (expectedAt(*ctx.h.structure, ctx.h.origin, ctx.h.view, normal) < 0) {
+      trace("EasyPlace build: no ghost block on the view ray, vanilla placement");
+      return orig(gm, pos, face, hand, flag);
+    }
     target = normal;  // aimed straight at a ghost block's spot
   }
-  if (!ctx.world.isAir(target)) return false;  // already built: don't stack blocks inside the structure
-  if (!holdingRight(ctx, target, hand)) return false;
+  if (!ctx.world.isAir(target)) {
+    trace("EasyPlace build: target {} {} {} already has a block", target[0], target[1], target[2]);
+    return false;  // already built: don't stack blocks inside the structure
+  }
+  if (!holdingRight(ctx, target, hand)) {
+    trace("EasyPlace build: wrong block in hand for {} {} {}", target[0], target[1], target[2]);
+    return false;
+  }
+  trace("EasyPlace build: placing at {} {} {}", target[0], target[1], target[2]);
 
   if (target == normal) {
     tInside = true;
@@ -235,12 +257,24 @@ bool buildBlockDetour(void *gm, const BlockPos *pos, uint8_t face, uint8_t hand,
 bool useItemDetour(void *gm, void *stack, uint32_t flag) {
   UseItemFn orig;
   while (!(orig = gUseOrig.load(std::memory_order_acquire))) std::this_thread::yield();
+  if (tInside) return orig(gm, stack, flag);
   Context ctx;
-  if (tInside || !gEnabled.load(std::memory_order_relaxed) || !gm || !context(gm, ctx)) return orig(gm, stack, flag);
+  if (!gEnabled.load(std::memory_order_relaxed) || !gm || !context(gm, ctx)) {
+    trace("EasyPlace air: pass (enabled={})", gEnabled.load());
+    return orig(gm, stack, flag);
+  }
   Cell target;
-  if (!findTarget(ctx.h, ctx.h.camera, ctx.dir, nullptr, target)) return orig(gm, stack, flag);
+  if (!findTarget(ctx.h, ctx.h.camera, ctx.dir, nullptr, target)) {
+    trace("EasyPlace air: no ghost block within reach (cam {:.1f} {:.1f} {:.1f} dir {:.2f} {:.2f} {:.2f})",
+          ctx.h.camera.x, ctx.h.camera.y, ctx.h.camera.z, ctx.dir.x, ctx.dir.y, ctx.dir.z);
+    return orig(gm, stack, flag);
+  }
   if (!ctx.world.isAir(target)) return orig(gm, stack, flag);
-  if (!holdingRight(ctx, target, 0)) return false;
+  if (!holdingRight(ctx, target, 0)) {
+    trace("EasyPlace air: wrong block in hand for {} {} {}", target[0], target[1], target[2]);
+    return false;
+  }
+  trace("EasyPlace air: placing at {} {} {}", target[0], target[1], target[2]);
   return afterPlace(ctx, placeAt(gm, ctx.player, ctx.world, target, 0, false));
 }
 
@@ -294,6 +328,7 @@ void installAsync(pl::log::Logger &log, std::function<void(const std::string &)>
                   std::function<void()> layerDone, std::function<void(bool, const std::string &)> done) {
   gMessage = std::move(message);
   gLayerDone = std::move(layerDone);
+  gLog = &log;
   std::thread([&log, done = std::move(done)] {
     std::string error;
     const bool ok = install(log, error);
