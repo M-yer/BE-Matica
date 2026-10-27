@@ -69,10 +69,28 @@ char *hitResultOf(void *player) {
 }
 
 // BlockType of a block name's default state. Only touched on the game thread.
+// Structures saved by older game versions use block names the game has since renamed.
+const std::string &currentName(const std::string &name) {
+  static const std::unordered_map<std::string, std::string> renamed = {
+      {"minecraft:grass", "minecraft:grass_block"},
+      {"minecraft:waterlily", "minecraft:lily_pad"},
+      {"minecraft:web", "minecraft:cobweb"},
+      {"minecraft:yellow_flower", "minecraft:dandelion"},
+      {"minecraft:seaLantern", "minecraft:sea_lantern"},
+      {"minecraft:tripWire", "minecraft:trip_wire"},
+      {"minecraft:invisibleBedrock", "minecraft:invisible_bedrock"},
+      {"minecraft:movingBlock", "minecraft:moving_block"},
+      {"minecraft:pistonArmCollision", "minecraft:piston_arm_collision"},
+      {"minecraft:stickyPistonArmCollision", "minecraft:sticky_piston_arm_collision"},
+  };
+  const auto it = renamed.find(name);
+  return it == renamed.end() ? name : it->second;
+}
+
 const void *blockTypeOf(const std::string &name) {
   static std::unordered_map<std::string, const void *> cache;
   if (auto it = cache.find(name); it != cache.end()) return it->second;
-  const HashedString hs(name);
+  const HashedString hs(currentName(name));
   void *block = gLookup(gRegistry(), &hs);
   const void *type = block ? at<void *>(block, off::Block_blockType) : nullptr;
   cache.emplace(name, type);
