@@ -130,4 +130,26 @@ outline:
   return mesh;
 }
 
+int32_t expectedAt(const Structure &s, std::array<int, 3> origin, const View &view, std::array<int, 3> world) {
+  const auto size = viewSize(s, view);
+  int cx = world[0] - origin[0], y = world[1] - origin[1], cz = world[2] - origin[2];
+  if (cx < 0 || y < 0 || cz < 0 || cx >= size[0] || y >= size[1] || cz >= size[2]) return -1;
+  // Undo the clockwise quarter turns one at a time (inverse of buildMesh's toWorld, per block).
+  int w = size[0], d = size[2];
+  const int rot = ((view.rotation % 4) + 4) % 4;
+  for (int r = 0; r < rot; ++r) {
+    const int px = cz, pz = w - 1 - cx;
+    cx = px, cz = pz;
+    std::swap(w, d);
+  }
+  if (view.mirror) cx = s.size[0] - 1 - cx;
+  switch (view.layers) {
+  case View::Layers::Single: if (y != view.layer) return -1; break;
+  case View::Layers::UpTo: if (y > view.layer) return -1; break;
+  default: break;
+  }
+  const int32_t idx = s.layers[0][s.index(cx, y, cz)];
+  return idx >= 0 && !isEmpty(s.palette[idx].name) ? idx : -1;
+}
+
 }  // namespace bematica

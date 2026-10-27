@@ -41,4 +41,8 @@ std::array<int, 3> viewSize(const Structure &s, const View &v);
 // position of the transformed structure's minimum corner.
 HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, const View &view, size_t maxQuads);
 
+// Palette index the structure wants at a world block, or -1 when the block is outside the structure,
+// hidden by the layer view, or air / structure void.
+int32_t expectedAt(const Structure &s, std::array<int, 3> origin, const View &view, std::array<int, 3> world);
+
 }  // namespace bematica

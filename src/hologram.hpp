@@ -28,4 +28,14 @@ void setView(const View &view);
 void setVisible(bool visible);
 void setOpacity(float alpha);  // 0..1
 
+// What's shown right now, for Easy Place. `structure` is null when nothing is shown.
+struct Snapshot {
+  std::shared_ptr<const Structure> structure;
+  std::array<int, 3> origin{};
+  View view;
+  Vec3f camera{};  // last rendered camera position
+  bool haveCamera = false;
+};
+Snapshot snapshot();
+
 }  // namespace bematica::hologram

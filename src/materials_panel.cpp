@@ -3,6 +3,8 @@
 #include <pl/ModMenu.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <cmath>
 
 namespace bematica {
@@ -71,6 +73,24 @@ void MaterialsPanel::setVisible(bool visible) {
   redrawLocked();
 }
 
+void MaterialsPanel::toast(std::string text) {
+  uint64_t id;
+  {
+    std::lock_guard lock(mu_);
+    if (text == toast_) return;  // repeated taps keep the current message
+    toast_ = std::move(text);
+    id = ++toastId_;
+    redrawLocked();
+  }
+  std::thread([this, id] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    std::lock_guard lock(mu_);
+    if (toastId_ != id) return;
+    toast_.clear();
+    redrawLocked();
+  }).detach();
+}
+
 void MaterialsPanel::toggleOpen() {
   std::lock_guard lock(mu_);
   open_ = !open_;
@@ -118,6 +138,15 @@ bool MaterialsPanel::onTouch(const pl::input::TouchEvent &e) {
 
 void MaterialsPanel::redrawLocked() {
   std::vector<mm::DrawCommand> cmds;
+  if (!toast_.empty()) {
+    const auto surface = mm::getHudSurfaceSize();
+    const float sh = surface.height > 0 ? surface.height : 1080, sw = surface.width > 0 ? surface.width : 2400;
+    const float font = sh * 0.04f, w = font * 0.55f * toast_.size() + font * 1.6f, h = font * 1.8f;
+    const float x = (sw - w) / 2, y = sh * 0.18f;
+    cmds.push_back({.type = mm::DrawCommandType::RectFilled, .x = x, .y = y, .w = w, .h = h, .color = 0xE0101418});
+    cmds.push_back({.type = mm::DrawCommandType::Text, .x = x + font * 0.8f, .y = y + (h - font) / 2,
+                    .color = 0xFFFFD866, .size = font, .text = toast_});
+  }
   if (visible_ && open_) {
     const auto surface = mm::getHudSurfaceSize();
     const float sh = surface.height > 0 ? surface.height : 1080, sw = surface.width > 0 ? surface.width : 2400;

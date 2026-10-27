@@ -1,8 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
-// Minecraft internals the hologram relies on. Found for Minecraft Bedrock 1.26.52.3 (arm64).
+// Minecraft internals BE-Matica relies on. Found for Minecraft Bedrock 1.26.52.3 (arm64).
 // Signatures and offsets break on game updates: re-check all of them together.
 namespace bematica::game {
 
@@ -22,6 +23,27 @@ constexpr const char *TessellatorVertex =
 // MeshHelpers::renderMeshImmediately(ScreenContext&, Tessellator&, const MaterialPtr&, ...)
 constexpr const char *RenderMeshImmediately =
     "FD 7B BC A9 FC 5F 01 A9 F6 57 02 A9 F4 4F 03 A9 FD 03 00 91 FF 03 0A D1 57 D0 3B D5 F6 03 00 AA";
+
+// Easy Place
+// GameMode::buildBlock(const BlockPos& clicked, uchar face, uchar hand, bool)
+constexpr const char *BuildBlock =
+    "FF C3 04 D1 FD 7B 0D A9 FC 73 00 F9 FA 67 0F A9 F8 5F 10 A9 F6 57 11 A9 F4 4F 12 A9 FD 43 03 91 5A D0 3B D5 F7 "
+    "03 04 2A";
+// BlockSource::getBlock(const BlockPos&)
+constexpr const char *BlockSourceGetBlock =
+    "FF 03 01 D1 FD 7B 01 A9 F6 57 02 A9 F4 4F 03 A9 FD 43 00 91 56 D0 3B D5 C8 16 40 F9 E8 07 00 F9 28 04 40 B9 09 84 "
+    "C0 79 1F 01 09 6B ? ? ? ? 09 80 C0 79 F3 03 00 AA";
+// Returns the BlockType an ItemStack places (two-register struct, first is the BlockType)
+constexpr const char *ItemBlockType =
+    "FD 7B BE A9 F4 4F 01 A9 FD 03 00 91 F4 03 00 AA ? ? ? ? ? ? ? ? E0 03 14 AA ? ? ? ? F3 03 00 AA";
+// Player's item in a hand (0 = main hand)
+constexpr const char *HandItem = "28 1C 00 12 1F 05 00 71 ? ? ? ? 08 00 40 F9 01 39 41 F9 20 00 1F D6";
+// Returns the global block registry
+constexpr const char *BlockRegistry =
+    "? ? ? ? ? ? ? ? C0 03 5F D6 ? ? ? ? ? ? ? ? C0 03 5F D6 FD 7B BD A9 F5 0B 00 F9 F4 4F 02 A9 FD 03 00 91 F3 03 08 "
+    "AA ? ? ? ? ? ? ? ? 14 55 40 A9";
+// Looks up a block's default state by its full name (HashedString)
+constexpr const char *BlockLookupByName = "E2 03 1F 2A E3 03 1F 2A E4 03 1F 2A ? ? ? ? FF 83 06 D1 FD 7B 14 A9";
 }  // namespace sig
 
 namespace off {
@@ -32,6 +54,16 @@ constexpr unsigned LevelRendererPlayer_selectionBoxMat = 0x1090;      // Materia
 constexpr unsigned ScreenContext_colorHolder = 0x30;                // float[4] tint applied to meshes
 constexpr unsigned ScreenContext_tessellator = 0xB8;
 constexpr unsigned Tessellator_postTransformOffset = 0x1CC;         // Vec3
+constexpr unsigned GameMode_player = 0x8;
+constexpr unsigned GameMode_hasAltHit = 0x41;   // bool: the hit position below is in use
+constexpr unsigned GameMode_altHitPos = 0x6C;   // Vec3
+constexpr unsigned Actor_level = 0x1D0;
+constexpr unsigned Actor_dimension = 0x1C0;
+constexpr unsigned Actor_rotation = 0x218;      // Vec2 pitch, yaw in degrees
+constexpr unsigned Dimension_blockSource = 0xD0;
+constexpr unsigned Level_vtGetHitResult = 0xA80; // vtable byte offset
+constexpr unsigned HitResult_type = 0x18, HitResult_face = 0x1C, HitResult_pos = 0x20, HitResult_hitPos = 0x2C;
+constexpr unsigned Block_blockType = 0x68;
 }  // namespace off
 
 enum Primitive : int { QuadList = 1, LineList = 4 };
@@ -41,5 +73,32 @@ using TessBeginFn = void (*)(void *tess, void *name, int mode, int vertexCount, 
 using TessColorFn = void (*)(void *tess, float r, float g, float b, float a);
 using TessVertexFn = void (*)(void *tess, float x, float y, float z);
 using RenderMeshFn = void (*)(void *screenContext, void *tess, void *material, char *scratch);
+
+struct BlockPos {
+  int x, y, z;
+};
+struct BlockTypeRef {
+  void *blockType;
+  uint64_t extra;
+};
+// Minecraft's HashedString: FNV-1a 64 hash, the string, and a lookup cache pointer.
+struct HashedString {
+  uint64_t hash = 0;
+  std::string str;
+  const HashedString *lastMatch = nullptr;
+  explicit HashedString(std::string s) : str(std::move(s)) {
+    uint64_t h = 0xCBF29CE484222325ULL;
+    for (unsigned char c : str) h = (h * 0x100000001B3ULL) ^ c;
+    hash = str.empty() ? 0 : h;
+  }
+};
+
+using BuildBlockFn = bool (*)(void *gameMode, const BlockPos *pos, uint8_t face, uint8_t hand, bool flag);
+using GetBlockFn = void *(*)(void *blockSource, const BlockPos &pos);
+using ItemBlockTypeFn = BlockTypeRef (*)(const void *itemStack);
+using HandItemFn = const void *(*)(void *player, uint8_t hand);
+using BlockRegistryFn = void *(*)();
+using BlockLookupFn = void *(*)(void *registry, const HashedString *name);
+using GetHitResultFn = void *(*)(void *level);
 
 }  // namespace bematica::game

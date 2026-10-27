@@ -37,6 +37,8 @@ std::shared_ptr<const Structure> gStructure;
 std::shared_ptr<const HologramMesh> gMesh;
 std::array<int, 3> gOrigin{};
 View gView;
+Vec3f gCamera{};
+bool gHaveCamera = false;
 std::atomic_bool gPlaceAtPlayer{false};
 std::atomic_bool gVisible{true};
 std::atomic<float> gAlpha{0.45f};
@@ -101,6 +103,8 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
   std::shared_ptr<const HologramMesh> mesh;
   {
     std::lock_guard lock(gMu);
+    gCamera = cam;
+    gHaveCamera = true;
     if (gPlaceAtPlayer.exchange(false)) {
       // The camera sits at eye height (1.62 blocks above the feet).
       gOrigin = {static_cast<int>(std::floor(cam.x)), static_cast<int>(std::floor(cam.y - 1.62f)),
@@ -197,6 +201,12 @@ void show(std::shared_ptr<const Structure> s, bool atPlayer) {
 }
 
 void moveToPlayer() { gPlaceAtPlayer = true; }
+
+Snapshot snapshot() {
+  std::lock_guard lock(gMu);
+  if (!gVisible) return {};
+  return {gStructure, gOrigin, gView, gCamera, gHaveCamera};
+}
 
 void nudge(int dx, int dy, int dz) {
   std::lock_guard lock(gMu);

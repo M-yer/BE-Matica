@@ -3,6 +3,7 @@
 #include "mesh.hpp"
 #include "mcstructure.hpp"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -181,6 +182,60 @@ int main(int argc, char **argv) {
     for (const auto &q : m.quads)
       if (q.r == mesh.quads[5].r && q.g == mesh.quads[5].g && q.v[0].z >= 1) stairsAtZ1 = true;
     CHECK(stairsAtZ1);
+  }
+  // expectedAt is the inverse of the mesh transform: stairs (palette 2) at local (1,0,0).
+  CHECK(expectedAt(s, {0, 0, 0}, {}, {1, 0, 0}) == 2);
+  CHECK(expectedAt(s, {0, 0, 0}, {}, {0, 0, 1}) == -1);  // air
+  CHECK(expectedAt(s, {10, 5, 10}, {}, {10, 5, 10}) == 0);
+  CHECK(expectedAt(s, {0, 0, 0}, View{.rotation = 1}, {1, 0, 1}) == 2);  // (x,z) -> (sz-1-z, x)
+  CHECK(expectedAt(s, {0, 0, 0}, View{.mirror = true}, {0, 0, 0}) == 2);
+  // Every rotation/mirror: the block the mesh draws at a world cell is the one expectedAt reports.
+  for (int rot = 0; rot < 4; ++rot)
+    for (bool mirror : {false, true}) {
+      View v{.rotation = rot, .mirror = mirror};
+      auto m = buildMesh(s, {0, 0, 0}, v, 1000);
+      for (const auto &q : m.quads) {
+        // Centre of the quad, nudged half a block inward along its normal, lies in the block's cell.
+        Vec3f c{0, 0, 0};
+        for (const auto &p : q.v) c.x += p.x / 4, c.y += p.y / 4, c.z += p.z / 4;
+        bool found = false;
+        for (int dx = -1; dx <= 1 && !found; ++dx)
+          for (int dz = -1; dz <= 1 && !found; ++dz)
+            for (int dy = -1; dy <= 1 && !found; ++dy) {
+              std::array<int, 3> cell{static_cast<int>(std::floor(c.x + 0.5f * dx)),
+                                      static_cast<int>(std::floor(c.y + 0.5f * dy)),
+                                      static_cast<int>(std::floor(c.z + 0.5f * dz))};
+              const int32_t e = expectedAt(s, {0, 0, 0}, v, cell);
+              if (e >= 0) found = true;
+            }
+        CHECK(found);
+      }
+    }
+  // Strict: forward-transform every block cell by hand and expect expectedAt to find that block.
+  {
+    // 3x1x2 asymmetric structure so every rotation/mirror is distinguishable.
+    Structure a;
+    a.size = {3, 1, 2};
+    a.palette = {{"minecraft:stone", {}, 0}, {"minecraft:dirt", {}, 0}, {"minecraft:sand", {}, 0},
+                 {"minecraft:clay", {}, 0}, {"minecraft:glass", {}, 0}, {"minecraft:ice", {}, 0}};
+    a.layers[0].resize(a.volume());
+    a.layers[1].assign(a.volume(), -1);
+    for (int x = 0; x < 3; ++x)
+      for (int z = 0; z < 2; ++z) a.layers[0][a.index(x, 0, z)] = x * 2 + z;
+    for (int rot = 0; rot < 4; ++rot)
+      for (bool mirror : {false, true}) {
+        View v{.rotation = rot, .mirror = mirror};
+        for (int x = 0; x < 3; ++x)
+          for (int z = 0; z < 2; ++z) {
+            int cx = mirror ? 2 - x : x, cz = z, w = 3, d = 2;
+            for (int r = 0; r < rot; ++r) {
+              const int nx = d - 1 - cz, nz = cx;
+              cx = nx, cz = nz;
+              std::swap(w, d);
+            }
+            CHECK(expectedAt(a, {0, 0, 0}, v, {cx, 0, cz}) == x * 2 + z);
+          }
+      }
   }
   // Single layer above the structure hides everything.
   CHECK(buildMesh(s, {0, 0, 0}, View{.layers = View::Layers::Single, .layer = 5}, 1000).quads.empty());

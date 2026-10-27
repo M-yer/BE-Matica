@@ -1,3 +1,4 @@
+#include "easyplace.hpp"
 #include "hologram.hpp"
 #include "library.hpp"
 #include "materials_panel.hpp"
@@ -73,6 +74,17 @@ public:
     ctx.logger().info("BE-Matica: HUD surface {}x{}", surface.width, surface.height);
 
     hologram::setOpacity(opacity_ / 100.0f);
+    easyplace::installAsync(
+        ctx.logger(), [this](const std::string &text) { panel_.toast(text); },
+        [this](bool ok, const std::string &error) {
+          std::lock_guard lock(mu_);
+          easyPlaceOk_ = ok;
+          if (!ok) {
+            status_ = "Easy Place unavailable: " + error;
+            ctx_->logger().warn("BE-Matica: {}", status_);
+          }
+          publishLocked();
+        });
     hologram::installAsync(ctx.logger(), [this](bool ok, const std::string &error) {
       std::lock_guard lock(mu_);
       hologramOk_ = ok;
@@ -93,6 +105,7 @@ public:
   bool disable(pl::mod::ModContext &ctx) {
     panel_.shutdown();
     hologram::uninstall();
+    easyplace::uninstall();
     mm::clearConfigSchema(kModule);
     mm::unregisterModule(kModule);
     ctx.logger().info("BE-Matica disabled");
@@ -114,6 +127,10 @@ private:
     } else if (key == "hologram") {
       hologramOn_ = value == "true" || value == "1";
       hologram::setVisible(enabled_ && hologramOn_);
+    } else if (key == "easyplace") {
+      easyPlaceOn_ = value == "true" || value == "1";
+      easyplace::setEnabled(easyPlaceOn_);
+      return;
     } else if (key == "move") {
       hologram::moveToPlayer();
       status_ = "Hologram moved to you";
@@ -248,6 +265,12 @@ private:
       schema.node(N{.id = "hologram", .key = "hologram", .category = "main", .title = "Show hologram",
                     .type = T::Toggle, .defaultValue = "true", .currentValue = hologramOn_ ? "true" : "false",
                     .hasCurrentValue = true});
+      if (easyPlaceOk_)
+        schema.node(N{.id = "easyplace", .key = "easyplace", .category = "main", .title = "Easy Place",
+                      .description = "Tap where a ghost block is to place it there. Only the right block is "
+                                     "placed: hold it in your hand.",
+                      .type = T::Toggle, .defaultValue = "false", .currentValue = easyPlaceOn_ ? "true" : "false",
+                      .hasCurrentValue = true});
       schema.node(N{.id = "move", .key = "move", .category = "main", .title = "Move hologram to me",
                     .description = "Puts the structure's corner where you stand.", .type = T::Button});
       schema.node(N{.id = "opacity", .key = "opacity", .category = "main", .title = "Hologram opacity",
@@ -320,6 +343,7 @@ private:
   pl::mod::ModContext *ctx_ = nullptr;
   MaterialsPanel panel_;
   bool hologramOk_ = false, hologramOn_ = true;
+  bool easyPlaceOk_ = false, easyPlaceOn_ = false;
   int opacity_ = 45;
   View view_;
   fs::path structuresDir_;

@@ -20,6 +20,7 @@ public:
 
   void setContent(std::string title, std::vector<Material> materials);
   void setVisible(bool visible);  // whether the button is offered at all
+  void toast(std::string text);   // short message near the top of the screen
 
 private:
   bool onTouch(const pl::input::TouchEvent &e);
@@ -40,6 +41,9 @@ private:
   int activePointer_ = -1;
   float downY_ = 0, lastY_ = 0;
   bool dragged_ = false;
+
+  std::string toast_;
+  uint64_t toastId_ = 0;
 };
 
 }  // namespace bematica
