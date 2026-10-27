@@ -50,7 +50,7 @@ constexpr const char *HandItem = "28 1C 00 12 1F 05 00 71 ? ? ? ? 08 00 40 F9 01
 constexpr const char *BlockRegistry =
     "? ? ? ? ? ? ? ? C0 03 5F D6 ? ? ? ? ? ? ? ? C0 03 5F D6 FD 7B BD A9 F5 0B 00 F9 F4 4F 02 A9 FD 03 00 91 F3 03 08 "
     "AA ? ? ? ? ? ? ? ? 14 55 40 A9";
-// Looks up a block's default state by its full name (HashedString)
+// Looks up a BlockType by its full name (HashedString); old names like minecraft:grass resolve too
 constexpr const char *BlockLookupByName = "E2 03 1F 2A E3 03 1F 2A E4 03 1F 2A ? ? ? ? FF 83 06 D1 FD 7B 14 A9";
 }  // namespace sig
 

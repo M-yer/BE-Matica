@@ -68,42 +68,14 @@ char *hitResultOf(void *player) {
   return getHit ? static_cast<char *>(getHit(level)) : nullptr;
 }
 
-// BlockType of a block name's default state. Only touched on the game thread.
-// Block names changed between game versions (grass -> grass_block, ...). Structures can use either
-// spelling, and the game's lookup table doesn't always know the new one, so both are tried.
-std::vector<std::string> namesFor(const std::string &name) {
-  static const std::pair<const char *, const char *> renamed[] = {
-      {"minecraft:grass", "minecraft:grass_block"},
-      {"minecraft:waterlily", "minecraft:lily_pad"},
-      {"minecraft:web", "minecraft:cobweb"},
-      {"minecraft:yellow_flower", "minecraft:dandelion"},
-      {"minecraft:seaLantern", "minecraft:sea_lantern"},
-      {"minecraft:tripWire", "minecraft:trip_wire"},
-      {"minecraft:invisibleBedrock", "minecraft:invisible_bedrock"},
-      {"minecraft:movingBlock", "minecraft:moving_block"},
-      {"minecraft:pistonArmCollision", "minecraft:piston_arm_collision"},
-      {"minecraft:stickyPistonArmCollision", "minecraft:sticky_piston_arm_collision"},
-  };
-  std::vector<std::string> names{name};
-  for (const auto &[oldName, newName] : renamed) {
-    if (name == oldName) names.emplace_back(newName);
-    if (name == newName) names.emplace_back(oldName);
-  }
-  return names;
-}
-
+// BlockType for a block name. Only touched on the game thread.
 const void *blockTypeOf(const std::string &name) {
   static std::unordered_map<std::string, const void *> cache;
   if (auto it = cache.find(name); it != cache.end()) return it->second;
-  void *block = nullptr;
-  for (const auto &candidate : namesFor(name)) {
-    const HashedString hs(candidate);
-    if ((block = gLookup(gRegistry(), &hs))) {
-      if (candidate != name) trace("EasyPlace: '{}' found as '{}'", name, candidate);
-      break;
-    }
-  }
-  const void *type = block ? at<void *>(block, off::Block_blockType) : nullptr;
+  const HashedString hs(name);
+  void *block = gLookup(gRegistry(), &hs);
+  // The registry lookup hands back the BlockType itself, not a Block.
+  const void *type = block;
   cache.emplace(name, type);
   return type;
 }
