@@ -43,7 +43,7 @@ public:
   }
 
   bool load(pl::mod::ModContext &ctx) {
-    ctx.logger().info("BE-Matica {} loaded", ctx.info().version);
+    ctx.logger().info("BE-Matica {} loaded (built {} {})", ctx.info().version, __DATE__, __TIME__);
     return true;
   }
 

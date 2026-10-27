@@ -69,9 +69,10 @@ char *hitResultOf(void *player) {
 }
 
 // BlockType of a block name's default state. Only touched on the game thread.
-// Structures saved by older game versions use block names the game has since renamed.
-const std::string &currentName(const std::string &name) {
-  static const std::unordered_map<std::string, std::string> renamed = {
+// Block names changed between game versions (grass -> grass_block, ...). Structures can use either
+// spelling, and the game's lookup table doesn't always know the new one, so both are tried.
+std::vector<std::string> namesFor(const std::string &name) {
+  static const std::pair<const char *, const char *> renamed[] = {
       {"minecraft:grass", "minecraft:grass_block"},
       {"minecraft:waterlily", "minecraft:lily_pad"},
       {"minecraft:web", "minecraft:cobweb"},
@@ -83,15 +84,25 @@ const std::string &currentName(const std::string &name) {
       {"minecraft:pistonArmCollision", "minecraft:piston_arm_collision"},
       {"minecraft:stickyPistonArmCollision", "minecraft:sticky_piston_arm_collision"},
   };
-  const auto it = renamed.find(name);
-  return it == renamed.end() ? name : it->second;
+  std::vector<std::string> names{name};
+  for (const auto &[oldName, newName] : renamed) {
+    if (name == oldName) names.emplace_back(newName);
+    if (name == newName) names.emplace_back(oldName);
+  }
+  return names;
 }
 
 const void *blockTypeOf(const std::string &name) {
   static std::unordered_map<std::string, const void *> cache;
   if (auto it = cache.find(name); it != cache.end()) return it->second;
-  const HashedString hs(currentName(name));
-  void *block = gLookup(gRegistry(), &hs);
+  void *block = nullptr;
+  for (const auto &candidate : namesFor(name)) {
+    const HashedString hs(candidate);
+    if ((block = gLookup(gRegistry(), &hs))) {
+      if (candidate != name) trace("EasyPlace: '{}' found as '{}'", name, candidate);
+      break;
+    }
+  }
   const void *type = block ? at<void *>(block, off::Block_blockType) : nullptr;
   cache.emplace(name, type);
   return type;
@@ -230,6 +241,7 @@ bool holdingRight(const Context &ctx, const Cell &target, uint8_t hand) {
   const void *held = stack ? gItemBlockType(stack).blockType : nullptr;
   const void *expected = blockTypeOf(want);
   if (!expected) {
+    trace("EasyPlace unknown block: '{}'", want);
     say("Unknown block: " + shortName(want));
     return false;
   }
