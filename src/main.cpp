@@ -141,8 +141,8 @@ private:
     } else if (key == "refresh") {
       scanLocked();
       status_ = files_.empty() ? "No structures yet" : std::to_string(files_.size()) + " structures found";
-    } else if (key == "overlay") {
-      overlay_ = value == "true" || value == "1";
+    } else if (key == "controls") {
+      controls_ = value == "true" || value == "1";
       saveSettingsLocked();
     } else if (key == "hologram") {
       hologramOn_ = value == "true" || value == "1";
@@ -361,9 +361,9 @@ private:
     }
     schema.node(N{.id = "refresh", .key = "refresh", .category = "main", .title = "Refresh list",
                   .description = "Rescan " + structuresDir_.string().substr(8), .type = T::Button});
-    schema.node(N{.id = "overlay", .key = "overlay", .category = "main", .title = "Blocks button on screen",
-                  .description = "Opens a scrollable block list while you build. Tap a block to tick it off.",
-                  .type = T::Toggle, .defaultValue = "false", .currentValue = overlay_ ? "true" : "false",
+    schema.node(N{.id = "controls", .key = "controls", .category = "main", .title = "Show controls",
+                  .description = "Chest button on screen: layer and move controls, and the block list.",
+                  .type = T::Toggle, .defaultValue = "true", .currentValue = controls_ ? "true" : "false",
                   .hasCurrentValue = true});
     if (!status_.empty())
       schema.node(N{.id = "status", .category = "main", .title = status_, .type = T::Info});
@@ -428,17 +428,17 @@ private:
       if (key == "easyplace") easyPlaceOn_ = value == "1";
       else if (key == "airplace") airPlaceOn_ = value == "1";
       else if (key == "hologram") hologramOn_ = value == "1";
-      else if (key == "overlay") overlay_ = value == "1";
+      else if (key == "controls") controls_ = value == "1";
       else if (key == "opacity") opacity_ = std::clamp(std::atoi(value.c_str()), 10, 100);
     }
   }
 
   void saveSettingsLocked() {
     std::ofstream(settingsFile()) << "easyplace=" << easyPlaceOn_ << "\nairplace=" << airPlaceOn_ << "\nhologram=" << hologramOn_
-                                  << "\noverlay=" << overlay_ << "\nopacity=" << opacity_ << "\n";
+                                  << "\ncontrols=" << controls_ << "\nopacity=" << opacity_ << "\n";
   }
 
-  void syncPanelLocked() { panel_.setVisible(enabled_ && overlay_ && !loadedName_.empty()); }
+  void syncPanelLocked() { panel_.setVisible(enabled_ && controls_ && !loadedName_.empty()); }
 
   pl::mod::ModContext *ctx_ = nullptr;
   MaterialsPanel panel_;
@@ -451,7 +451,7 @@ private:
   std::recursive_mutex mu_;
   bool publishing_ = false;
   bool enabled_ = true;
-  bool overlay_ = false;
+  bool controls_ = true;
   std::vector<std::string> files_;
   std::string status_;
   Structure loaded_;

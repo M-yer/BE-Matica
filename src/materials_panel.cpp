@@ -72,10 +72,10 @@ void MaterialsPanel::setVisible(bool visible) {
   std::lock_guard lock(mu_);
   visible_ = visible;
   if (visible && !buttonRegistered_) {
-    buttonRegistered_ = mm::ButtonBuilder(kButtonId, "BE-Matica blocks")
+    buttonRegistered_ = mm::ButtonBuilder(kButtonId, "BE-Matica controls")
                             .moduleId(moduleId_)
                             .modId(modId_)
-                            .label("Blocks")
+                            .label("Controls")
                             .svgIcon(kChestIcon)
                             .sizeScale(1.0f, 1.0f)
                             .onEvent([this](std::string_view, mm::ButtonEvent e, float) {
@@ -83,7 +83,7 @@ void MaterialsPanel::setVisible(bool visible) {
                             })
                             .registerButton();
     // A rejected button fails silently in the launcher; this shows it in logcat.
-    if (!buttonRegistered_) __android_log_print(ANDROID_LOG_WARN, "BE-Matica", "Blocks button was not registered");
+    if (!buttonRegistered_) __android_log_print(ANDROID_LOG_WARN, "BE-Matica", "Controls button was not registered");
   } else if (!visible && buttonRegistered_) {
     mm::unregisterButton(kButtonId);
     buttonRegistered_ = false;
