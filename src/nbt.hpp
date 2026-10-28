@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <span>
 #include <string>
 #include <string_view>
@@ -46,6 +47,22 @@ enum class Endian { Little, Big };
 
 // Parses a complete file whose root is a named Compound. On failure returns false and sets error.
 bool parse(std::span<const uint8_t> data, Tag &root, std::string &error, Endian endian = Endian::Little);
+
+// Little-endian NBT bytes, written piece by piece. Lets a caller stream data too large to copy
+// into a Tag tree first.
+class Writer {
+public:
+  template <typename T> void put(T v) {
+    uint8_t bytes[sizeof(T)];
+    std::memcpy(bytes, &v, sizeof(T));
+    out.insert(out.end(), bytes, bytes + sizeof(T));
+  }
+  void string(const std::string &s);
+  void ints(const std::vector<int64_t> &v, Type t);
+  void payload(const Tag &tag);
+
+  std::vector<uint8_t> out;
+};
 
 // Little-endian bytes of `root` as a named root Compound. Integer lists are written with `listType`.
 std::vector<uint8_t> write(const Tag &root);

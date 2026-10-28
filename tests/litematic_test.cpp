@@ -37,7 +37,7 @@ size_t countBlocks(const Structure &s) {
 const nbt::Tag *state(const BlockState &bs, const char *key) { return bs.states.get(key); }
 
 void testBlockMap() {
-  const auto &map = BlockMap::builtIn();
+  const auto map = BlockMap::forBlocks({"minecraft:oak_stairs", "minecraft:grass", "minecraft:not_a_block"});
   CHECK(map.version() > 0);
   BlockState bs;
   CHECK(map.toBedrock("minecraft:oak_stairs",
@@ -50,6 +50,7 @@ void testBlockMap() {
   CHECK(map.toBedrock("minecraft:oak_stairs", {{"facing", "east"}}, bs) && bs.name == "minecraft:oak_stairs");
   CHECK(map.toBedrock("minecraft:grass", {}, bs) && bs.name == "minecraft:short_grass");
   CHECK(!map.toBedrock("minecraft:not_a_block", {}, bs));
+  CHECK(!map.toBedrock("minecraft:stone", {}, bs));  // in the table, but not asked for
 }
 
 }  // namespace

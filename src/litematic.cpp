@@ -44,6 +44,7 @@ bool loadLitematic(std::span<const uint8_t> data, Structure &out, LitematicInfo 
   if (!gunzip(data, raw, 256u << 20, error)) return false;
   nbt::Tag root;
   if (!nbt::parse(raw, root, error, nbt::Endian::Big)) return false;
+  std::vector<uint8_t>().swap(raw);  // the parsed tree holds everything now
 
   out = Structure{};
   info = LitematicInfo{};
@@ -78,7 +79,12 @@ bool loadLitematic(std::span<const uint8_t> data, Structure &out, LitematicInfo 
   out.layers[0].assign(out.volume(), -1);
   out.layers[1].assign(out.volume(), -1);
 
-  const auto &map = BlockMap::builtIn();
+  std::vector<std::string> javaNames;
+  for (const auto &r : list)
+    if (const auto *palette = r.tag->get("BlockStatePalette", nbt::Type::List))
+      for (const auto &entry : palette->items)
+        if (const auto *name = entry.get("Name", nbt::Type::String)) javaNames.push_back(name->s);
+  const BlockMap map = BlockMap::forBlocks(javaNames);
   if (!map.version()) return fail(error, "block table missing");
   std::map<std::string, int32_t> paletteIndex;  // Bedrock state text -> index in out.palette
   auto addBedrock = [&](const BlockState &bs) {

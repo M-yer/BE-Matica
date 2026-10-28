@@ -76,49 +76,64 @@ bool loadMcstructure(std::span<const uint8_t> data, Structure &out, std::string 
 
 std::vector<uint8_t> saveMcstructure(const Structure &s) {
   using namespace nbt;
-  auto intList = [](const auto &values) {
-    Tag t;
-    t.type = Type::List;
-    t.listType = Type::Int;
-    t.ints.assign(values.begin(), values.end());
-    return t;
+  // Written field by field instead of as one Tag tree: the tree would copy every block index into
+  // 64-bit storage first, roughly tripling the memory a big structure needs while it saves.
+  Writer w;
+  w.out.reserve(s.volume() * 2 * sizeof(int32_t) + s.palette.size() * 128 + 512);
+  auto field = [&](Type t, const char *key) {
+    w.put<uint8_t>(static_cast<uint8_t>(t));
+    w.string(key);
   };
-  Tag indices;
-  indices.type = Type::List;
-  indices.listType = Type::List;
-  for (const auto &layer : s.layers) indices.items.push_back(intList(layer));
+  auto intList = [&](const char *key, std::span<const int32_t> values) {
+    field(Type::List, key);
+    w.put<uint8_t>(static_cast<uint8_t>(Type::Int));
+    w.put<int32_t>(static_cast<int32_t>(values.size()));
+    // Android and desktop hosts are little-endian, as the format is, so the ints copy as they are.
+    const auto *bytes = reinterpret_cast<const uint8_t *>(values.data());
+    w.out.insert(w.out.end(), bytes, bytes + values.size_bytes());
+  };
 
-  Tag palette;
-  palette.type = Type::List;
-  palette.listType = Type::Compound;
+  w.put<uint8_t>(static_cast<uint8_t>(Type::Compound));
+  w.string("");
+  field(Type::Int, "format_version");
+  w.put<int32_t>(1);
+  intList("size", s.size);
+  field(Type::Compound, "structure");
+
+  field(Type::List, "block_indices");
+  w.put<uint8_t>(static_cast<uint8_t>(Type::List));
+  w.put<int32_t>(2);
+  for (const auto &layer : s.layers) {
+    w.put<uint8_t>(static_cast<uint8_t>(Type::Int));
+    w.put<int32_t>(static_cast<int32_t>(layer.size()));
+    const auto *bytes = reinterpret_cast<const uint8_t *>(layer.data());
+    w.out.insert(w.out.end(), bytes, bytes + layer.size() * sizeof(int32_t));
+  }
+  field(Type::List, "entities");
+  w.put<uint8_t>(static_cast<uint8_t>(Type::Compound));
+  w.put<int32_t>(0);
+
+  field(Type::Compound, "palette");
+  field(Type::Compound, "default");
+  field(Type::List, "block_palette");
+  w.put<uint8_t>(static_cast<uint8_t>(Type::Compound));
+  w.put<int32_t>(static_cast<int32_t>(s.palette.size()));
   for (const auto &bs : s.palette) {
     Tag entry = makeCompound();
     put(entry, "name", makeString(bs.name));
-    Tag states = bs.states.type == Type::Compound ? bs.states : makeCompound();
-    put(entry, "states", std::move(states));
+    put(entry, "states", bs.states.type == Type::Compound ? bs.states : makeCompound());
     put(entry, "version", makeInt(Type::Int, bs.version));
-    palette.items.push_back(std::move(entry));
+    w.payload(entry);
   }
-  Tag def = makeCompound();
-  put(def, "block_palette", std::move(palette));
-  put(def, "block_position_data", makeCompound());
-  Tag palettes = makeCompound();
-  put(palettes, "default", std::move(def));
+  field(Type::Compound, "block_position_data");
+  w.put<uint8_t>(0);
+  w.put<uint8_t>(0);  // end of default
+  w.put<uint8_t>(0);  // end of palette
+  w.put<uint8_t>(0);  // end of structure
 
-  Tag entities;
-  entities.type = Type::List;
-  entities.listType = Type::Compound;
-  Tag structure = makeCompound();
-  put(structure, "block_indices", std::move(indices));
-  put(structure, "entities", std::move(entities));
-  put(structure, "palette", std::move(palettes));
-
-  Tag root = makeCompound();
-  put(root, "format_version", makeInt(Type::Int, 1));
-  put(root, "size", intList(s.size));
-  put(root, "structure", std::move(structure));
-  put(root, "structure_world_origin", intList(s.origin));
-  return write(root);
+  intList("structure_world_origin", s.origin);
+  w.put<uint8_t>(0);  // end of root
+  return std::move(w.out);
 }
 
 }  // namespace bematica

@@ -227,15 +227,17 @@ private:
       return;
     }
     const std::string outName = fs::path(name).stem().string() + ".mcstructure";
-    const auto bytes = saveMcstructure(s);
-    std::ofstream out(structuresDir_ / outName, std::ios::binary);
-    if (!out.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) {
-      status_ = "Could not save converted file";
-      return;
+    {
+      const auto bytes = saveMcstructure(s);
+      std::ofstream out(structuresDir_ / outName, std::ios::binary);
+      if (!out.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) {
+        status_ = "Could not save converted file";
+        return;
+      }
     }
-    out.close();
     scanLocked();
-    loadLocked(outName);
+    // Show the structure already in memory rather than reading back the file just written.
+    showLocked(outName, std::move(s));
     status_ = "Converted " + name + " to " + outName;
     if (!info.unknownBlocks.empty())
       status_ += " (" + std::to_string(info.unknownBlocks.size()) + " Java block types have no Bedrock match and were left out)";
@@ -291,6 +293,10 @@ private:
       ctx_->logger().warn("BE-Matica: {}", status_);
       return;
     }
+    showLocked(name, std::move(s));
+  }
+
+  void showLocked(const std::string &name, Structure &&s) {
     loaded_ = std::move(s);
     loadedName_ = name;
     materials_ = countMaterials(loaded_);

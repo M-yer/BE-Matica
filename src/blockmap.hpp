@@ -14,7 +14,9 @@ class BlockMap {
 public:
   using Props = std::vector<std::pair<std::string, std::string>>;  // sorted by key
 
-  static const BlockMap &builtIn();
+  // Reads the built-in table, keeping only the given Java blocks. The full table is tens of MB
+  // once parsed, while one schematic uses a few hundred states, so nothing else is kept.
+  static BlockMap forBlocks(const std::vector<std::string> &javaNames);
 
   // False when the Java block has no Bedrock equivalent. Unknown property combinations fall back
   // to the closest known state of the same block, so files from older Java versions still convert.

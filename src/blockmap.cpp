@@ -3,6 +3,7 @@
 #include "gzip.hpp"
 
 #include <cstdlib>
+#include <unordered_set>
 #include <string_view>
 
 extern "C" const uint8_t bematica_block_map[], bematica_block_map_end[];
@@ -45,33 +46,51 @@ const char *renamedJava(const std::string &name) {
 
 }  // namespace
 
-const BlockMap &BlockMap::builtIn() {
-  static const BlockMap map = [] {
-    BlockMap m;
-    std::vector<uint8_t> text;
-    std::string error;
-    if (!gunzip({bematica_block_map, bematica_block_map_end}, text, 16u << 20, error)) return m;
-    const std::string_view all(reinterpret_cast<const char *>(text.data()), text.size());
-    const auto lines = split(all, '\n');
-    m.version_ = std::atoi(std::string(lines[0]).c_str());
-    for (size_t k = 1; k < lines.size(); ++k) {
-      const auto cols = split(lines[k], '\t');
-      if (cols.size() != 3) continue;
-      const auto java = cols[0];
-      const size_t bracket = java.find('[');
-      Entry e;
-      const std::string_view props = java.substr(bracket + 1, java.size() - bracket - 2);
-      if (!props.empty())
-        for (auto p : split(props, ',')) {
-          const size_t eq = p.find('=');
-          e.javaProps.emplace_back(std::string(p.substr(0, eq)), std::string(p.substr(eq + 1)));
-        }
-      e.bedrock = {std::string(cols[1]), parseStates(cols[2]), m.version_};
-      m.byName_[std::string(java.substr(0, bracket))].push_back(std::move(e));
+BlockMap BlockMap::forBlocks(const std::vector<std::string> &javaNames) {
+  std::unordered_set<std::string> wanted(javaNames.begin(), javaNames.end());
+  for (const auto &name : javaNames)
+    if (const char *renamed = renamedJava(name)) wanted.insert(renamed);
+
+  BlockMap m;
+  int32_t version = 0;
+  auto takeLine = [&](std::string_view line) {
+    if (!version) {
+      version = std::atoi(std::string(line).c_str());
+      return;
     }
-    return m;
-  }();
-  return map;
+    const size_t bracket = line.find('[');
+    if (bracket == std::string_view::npos || !wanted.count(std::string(line.substr(0, bracket)))) return;
+    const auto cols = split(line, '\t');
+    if (cols.size() != 3) return;
+    const auto java = cols[0];
+    Entry e;
+    const std::string_view props = java.substr(bracket + 1, java.size() - bracket - 2);
+    if (!props.empty())
+      for (auto p : split(props, ',')) {
+        const size_t eq = p.find('=');
+        e.javaProps.emplace_back(std::string(p.substr(0, eq)), std::string(p.substr(eq + 1)));
+      }
+    e.bedrock = {std::string(cols[1]), parseStates(cols[2]), version};
+    m.byName_[std::string(java.substr(0, bracket))].push_back(std::move(e));
+  };
+  std::string partial;  // a line cut in two by the chunk boundary
+  std::string error;
+  const bool ok = gunzipChunks({bematica_block_map, bematica_block_map_end}, [&](std::span<const uint8_t> chunk) {
+    std::string_view rest(reinterpret_cast<const char *>(chunk.data()), chunk.size());
+    for (size_t nl; (nl = rest.find('\n')) != std::string_view::npos; rest.remove_prefix(nl + 1)) {
+      if (partial.empty()) {
+        takeLine(rest.substr(0, nl));
+      } else {
+        partial.append(rest.substr(0, nl));
+        takeLine(partial);
+        partial.clear();
+      }
+    }
+    partial.append(rest);
+  }, error);
+  if (!partial.empty()) takeLine(partial);
+  if (ok) m.version_ = version;
+  return m;
 }
 
 bool BlockMap::toBedrock(const std::string &javaName, const Props &props, BlockState &out) const {

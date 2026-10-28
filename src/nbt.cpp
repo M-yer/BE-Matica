@@ -109,67 +109,6 @@ private:
   bool swap_;
 };
 
-class Writer {
-public:
-  template <typename T> void put(T v) {
-    uint8_t bytes[sizeof(T)];
-    std::memcpy(bytes, &v, sizeof(T));
-    out.insert(out.end(), bytes, bytes + sizeof(T));
-  }
-
-  void string(const std::string &s) {
-    put<uint16_t>(static_cast<uint16_t>(s.size()));
-    out.insert(out.end(), s.begin(), s.end());
-  }
-
-  void ints(const std::vector<int64_t> &v, Type t) {
-    for (int64_t x : v) {
-      switch (t) {
-      case Type::Byte: put<int8_t>(static_cast<int8_t>(x)); break;
-      case Type::Short: put<int16_t>(static_cast<int16_t>(x)); break;
-      case Type::Int: put<int32_t>(static_cast<int32_t>(x)); break;
-      default: put<int64_t>(x); break;
-      }
-    }
-  }
-
-  void payload(const Tag &tag) {
-    switch (tag.type) {
-    case Type::Byte: put<int8_t>(static_cast<int8_t>(tag.i)); break;
-    case Type::Short: put<int16_t>(static_cast<int16_t>(tag.i)); break;
-    case Type::Int: put<int32_t>(static_cast<int32_t>(tag.i)); break;
-    case Type::Long: put<int64_t>(tag.i); break;
-    case Type::Float: put<float>(static_cast<float>(tag.f)); break;
-    case Type::Double: put<double>(tag.f); break;
-    case Type::String: string(tag.s); break;
-    case Type::ByteArray: put<int32_t>(static_cast<int32_t>(tag.ints.size())); ints(tag.ints, Type::Byte); break;
-    case Type::IntArray: put<int32_t>(static_cast<int32_t>(tag.ints.size())); ints(tag.ints, Type::Int); break;
-    case Type::LongArray: put<int32_t>(static_cast<int32_t>(tag.ints.size())); ints(tag.ints, Type::Long); break;
-    case Type::List:
-      put<uint8_t>(static_cast<uint8_t>(tag.listType));
-      if (tag.items.empty()) {
-        put<int32_t>(static_cast<int32_t>(tag.ints.size()));
-        ints(tag.ints, tag.listType);
-      } else {
-        put<int32_t>(static_cast<int32_t>(tag.items.size()));
-        for (const auto &item : tag.items) payload(item);
-      }
-      break;
-    case Type::Compound:
-      for (size_t k = 0; k < tag.items.size(); ++k) {
-        put<uint8_t>(static_cast<uint8_t>(tag.items[k].type));
-        string(tag.keys[k]);
-        payload(tag.items[k]);
-      }
-      put<uint8_t>(0);
-      break;
-    case Type::End: break;
-    }
-  }
-
-  std::vector<uint8_t> out;
-};
-
 }  // namespace
 
 const Tag *Tag::get(std::string_view key) const {
@@ -195,6 +134,56 @@ bool parse(std::span<const uint8_t> data, Tag &root, std::string &error, Endian 
   } catch (const std::exception &e) {
     error = e.what();
     return false;
+  }
+}
+
+void Writer::string(const std::string &s) {
+  put<uint16_t>(static_cast<uint16_t>(s.size()));
+  out.insert(out.end(), s.begin(), s.end());
+}
+
+void Writer::ints(const std::vector<int64_t> &v, Type t) {
+  for (int64_t x : v) {
+    switch (t) {
+    case Type::Byte: put<int8_t>(static_cast<int8_t>(x)); break;
+    case Type::Short: put<int16_t>(static_cast<int16_t>(x)); break;
+    case Type::Int: put<int32_t>(static_cast<int32_t>(x)); break;
+    default: put<int64_t>(x); break;
+    }
+  }
+}
+
+void Writer::payload(const Tag &tag) {
+  switch (tag.type) {
+  case Type::Byte: put<int8_t>(static_cast<int8_t>(tag.i)); break;
+  case Type::Short: put<int16_t>(static_cast<int16_t>(tag.i)); break;
+  case Type::Int: put<int32_t>(static_cast<int32_t>(tag.i)); break;
+  case Type::Long: put<int64_t>(tag.i); break;
+  case Type::Float: put<float>(static_cast<float>(tag.f)); break;
+  case Type::Double: put<double>(tag.f); break;
+  case Type::String: string(tag.s); break;
+  case Type::ByteArray: put<int32_t>(static_cast<int32_t>(tag.ints.size())); ints(tag.ints, Type::Byte); break;
+  case Type::IntArray: put<int32_t>(static_cast<int32_t>(tag.ints.size())); ints(tag.ints, Type::Int); break;
+  case Type::LongArray: put<int32_t>(static_cast<int32_t>(tag.ints.size())); ints(tag.ints, Type::Long); break;
+  case Type::List:
+    put<uint8_t>(static_cast<uint8_t>(tag.listType));
+    if (tag.items.empty()) {
+      put<int32_t>(static_cast<int32_t>(tag.ints.size()));
+      ints(tag.ints, tag.listType);
+    } else {
+      put<int32_t>(static_cast<int32_t>(tag.items.size()));
+      for (const auto &item : tag.items) payload(item);
+    }
+    break;
+  case Type::Compound:
+    for (size_t k = 0; k < tag.items.size(); ++k) {
+      put<uint8_t>(static_cast<uint8_t>(tag.items[k].type));
+      string(tag.keys[k]);
+      payload(tag.items[k]);
+    }
+    put<uint8_t>(0);
+    break;
+  case Type::End: break;
   }
 }
 
