@@ -10,6 +10,8 @@
 #include <pl/memory/Signature.hpp>
 
 #include <array>
+#include <sys/uio.h>
+#include <unistd.h>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -62,8 +64,60 @@ template <typename T> T at(const void *base, unsigned offset) {
   return v;
 }
 
+// Copies memory that may not be mapped: a bad address fails instead of crashing.
+bool safeRead(const void *src, void *dst, size_t n) {
+  iovec local{dst, n}, remote{reinterpret_cast<void *>(untag(src)), n};
+  return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == static_cast<ssize_t>(n);
+}
+
+// Class name of a polymorphic game object from its RTTI ("5Level" -> "Level"), or "" if it is not one.
+std::string className(const void *obj) {
+  const void *vtable = nullptr, *typeInfo = nullptr, *name = nullptr;
+  if (!obj || !safeRead(obj, &vtable, 8) || !vtable) return {};
+  if (!safeRead(static_cast<const char *>(vtable) - 8, &typeInfo, 8) || !typeInfo) return {};
+  if (!safeRead(static_cast<const char *>(typeInfo) + 8, &name, 8) || !name) return {};
+  char buf[33]{};
+  if (!safeRead(name, buf, 32) && !safeRead(name, buf, 16)) return {};
+  std::string_view n(buf);
+  while (!n.empty() && n.front() >= '0' && n.front() <= '9') n.remove_prefix(1);
+  return std::string(n);
+}
+
+// Game updates move fields around, so the player's level and dimension (and the dimension's block source)
+// are found by the class of what they point at. Offsets of the first match, scanned once.
+int findField(const void *obj, unsigned from, unsigned to, std::string_view suffix) {
+  for (unsigned off = from; off < to; off += 8) {
+    const void *p = nullptr;
+    if (!safeRead(static_cast<const char *>(obj) + off, &p, 8) || !p) continue;
+    const std::string name = className(p);
+    if (name.size() >= suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0)
+      return static_cast<int>(off);
+  }
+  return -1;
+}
+
+struct Fields {
+  int level = -1, dimension = -1, blockSource = -1;
+};
+
+const Fields &fields(void *player) {
+  static Fields f;
+  static bool found = false;
+  if (found || !player) return f;
+  f.level = findField(player, 0x100, 0x400, "Level");
+  f.dimension = findField(player, 0x100, 0x400, "Dimension");
+  void *dimension = f.dimension >= 0 ? at<void *>(player, f.dimension) : nullptr;
+  f.blockSource = dimension ? findField(dimension, 0, 0x400, "BlockSource") : -1;
+  found = f.level >= 0 && f.dimension >= 0 && f.blockSource >= 0;
+  if (gLog)
+    gLog->info("EasyPlace fields: player is {}, level @{:#x}, dimension @{:#x}, block source @{:#x}", className(player),
+               f.level, f.dimension, f.blockSource);
+  return f;
+}
+
 char *hitResultOf(void *player) {
-  void *level = at<void *>(player, off::Actor_level);
+  const int field = fields(player).level;
+  void *level = field >= 0 ? at<void *>(player, field) : nullptr;
   void **vtable = level ? at<void **>(level, 0) : nullptr;
   auto getHit = vtable ? reinterpret_cast<GetHitResultFn>(vtable[off::Level_vtGetHitResult / sizeof(void *)]) : nullptr;
   return getHit ? static_cast<char *>(getHit(level)) : nullptr;
@@ -187,22 +241,31 @@ struct Context {
 
 
 // Everything Easy Place needs about the player and world, or false to leave the tap to the game.
+bool contextFail(const char *step) {
+  static std::atomic_bool logged{false};
+  if (!logged.exchange(true) && gLog) gLog->info("EasyPlace context failed at '{}'", step);
+  return false;
+}
+
 bool context(void *gm, Context &ctx) {
   ctx.h = hologram::snapshot();
   ctx.player = at<void *>(gm, off::GameMode_player);
-  if (!ctx.h.structure || !ctx.player) return false;
-  void *dimension = at<void *>(ctx.player, off::Actor_dimension);
-  void *source = dimension ? at<void *>(dimension, off::Dimension_blockSource) : nullptr;
+  if (!ctx.h.structure) return false;
+  if (!ctx.player) return contextFail("player");
+  const Fields &f = fields(ctx.player);
+  void *dimension = f.dimension >= 0 ? at<void *>(ctx.player, f.dimension) : nullptr;
+  void *source = dimension && f.blockSource >= 0 ? at<void *>(dimension, f.blockSource) : nullptr;
+  if (!source) return contextFail(dimension ? "block source" : "dimension");
   const void *air = blockTypeOf("minecraft:air");
-  if (!source || !air) return false;
+  if (!air) return contextFail("air block");
   ctx.world = {source, air};
   // The game's own aim ray (what the crosshair is pointing along), from the current hit result.
   const char *hr = hitResultOf(ctx.player);
-  if (!hr) return false;
+  if (!hr) return contextFail("hit result");
   ctx.eye = at<Vec3f>(hr, off::HitResult_rayStart);
   const Vec3f d = at<Vec3f>(hr, off::HitResult_rayDir);
   const float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
-  if (!(len > 1e-4f) || !std::isfinite(ctx.eye.x)) return false;
+  if (!(len > 1e-4f) || !std::isfinite(ctx.eye.x)) return contextFail("aim ray");
   ctx.dir = {d.x / len, d.y / len, d.z / len};
   static bool checked = false;  // the player's head is always in air: proves the air test works
   if (!checked) {

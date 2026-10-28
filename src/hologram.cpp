@@ -6,8 +6,12 @@
 #include <pl/Logger.hpp>
 #include <pl/memory/Hook.hpp>
 #include <pl/memory/Signature.hpp>
+#include <fmt/format.h>
+#include <sys/uio.h>
+#include <unistd.h>
 
 #include <algorithm>
+#include <android/log.h>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -87,6 +91,37 @@ template <typename T> T at(void *base, unsigned offset) {
   return v;
 }
 
+// Copies 4 floats from a pointer that may not be valid: a bad address fails instead of crashing.
+bool readColor(const float *src, float out[4]) {
+  iovec local{out, 4 * sizeof(float)}, remote{const_cast<float *>(src), 4 * sizeof(float)};
+  return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == static_cast<ssize_t>(4 * sizeof(float));
+}
+
+bool looksLikeColor(const float *c) {
+  float v[4];
+  if (!readColor(c, v)) return false;
+  for (float x : v)
+    if (!(x >= 0.0f && x <= 1.0f)) return false;
+  return true;
+}
+
+// One line on the first drawn frame, to check this version's offsets against where the player stands.
+void logFirstFrame(void *screenContext, char *lrp, const Vec3f &cam, void *faceMat, void *lineMat) {
+  static std::atomic_bool logged{false};
+  if (logged.exchange(true)) return;
+  auto tint = [&](unsigned offset) {
+    float c[4];
+    if (!readColor(at<float *>(screenContext, offset), c)) return std::string("unreadable");
+    return fmt::format("{:.2f} {:.2f} {:.2f} {:.2f}", c[0], c[1], c[2], c[3]);
+  };
+  __android_log_print(ANDROID_LOG_INFO, "BE-Matica",
+                      "Hologram first frame: camera %.2f %.2f %.2f (vec@0x614 %.2f %.2f %.2f), face material %p %p, "
+                      "line material %p %p, tint %s",
+                      cam.x, cam.y, cam.z, at<float>(lrp, 0x614), at<float>(lrp, 0x618), at<float>(lrp, 0x61c),
+                      at<void *>(faceMat, 0), at<void *>(faceMat, 8), at<void *>(lineMat, 0), at<void *>(lineMat, 8),
+                      tint(0x30).c_str());
+}
+
 void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject) {
   // The game can enter the detour before hook() has stored the original on the install thread.
   RenderLevelFn orig;
@@ -119,10 +154,13 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
   void *faceMat = lrp + off::LevelRendererPlayer_selectionOverlayMat;
   void *lineMat = lrp + off::LevelRendererPlayer_selectionBoxMat;
   const bool haveFace = at<void *>(faceMat, 0) != nullptr, haveLine = at<void *>(lineMat, 0) != nullptr;
+  logFirstFrame(screenContext, lrp, cam, faceMat, lineMat);
   if (!haveFace && !haveLine) return;
 
-  // Leave the game's tint and tessellator offset exactly as we found them.
+  // Leave the game's tint and tessellator offset exactly as we found them. The tint offset is unconfirmed
+  // for this game version, so it is only touched when what it points at looks like a colour.
   float *tintColor = at<float *>(screenContext, off::ScreenContext_colorHolder);
+  if (tintColor && !looksLikeColor(tintColor)) tintColor = nullptr;
   float savedTint[4]{};
   if (tintColor) {
     std::memcpy(savedTint, tintColor, sizeof(savedTint));

@@ -3,19 +3,16 @@
 #include <cstdint>
 #include <string>
 
-// Minecraft internals BE-Matica relies on. Found for Minecraft Bedrock 1.26.52.3 (arm64).
+// Minecraft internals BE-Matica relies on. Found for Minecraft Bedrock 1.26.60.4 (arm64).
 // Signatures and offsets break on game updates: re-check all of them together.
 namespace bematica::game {
 
 namespace sig {
 // LevelRenderer::renderLevel(ScreenContext&, FrameRenderObject&)
-constexpr const char *RenderLevel =
-    "EE 0F 16 FC ED 33 01 6D EB 2B 02 6D E9 23 03 6D FD 7B 04 A9 FC 6F 05 A9 FA 67 06 A9 F8 5F 07 A9 F6 57 08 A9 F4 4F "
-    "09 A9 FD 03 01 91 FF 03 06 D1";
+constexpr const char *RenderLevel = "FF 83 07 D1 EE AB 00 FD ED 33 16 6D EB 2B 17 6D E9 23 18 6D FD 7B 19 A9";
 // RenderLevel minus its first 16 bytes, which another mod's inline hook may have overwritten.
 constexpr const char *RenderLevelTail =
-    "FD 7B 04 A9 FC 6F 05 A9 FA 67 06 A9 F8 5F 07 A9 F6 57 08 A9 F4 4F 09 A9 FD 03 01 91 FF 03 06 D1 57 D0 3B D5 F8 03 "
-    "00 AA";
+    "E9 23 18 6D FD 7B 19 A9 FC 67 1A A9 F8 5F 1B A9 F6 57 1C A9 F4 4F 1D A9 FD 43 06 91 57 D0 3B D5 F3 03 00 AA";
 constexpr uintptr_t RenderLevelTailOffset = 16;
 // Tessellator::begin(name, primitive mode, vertex count, build face data)
 constexpr const char *TessellatorBegin = "FD 7B BC A9 F8 5F 01 A9 F6 57 02 A9 F4 4F 03 A9 FD 03 00 91 08 60 4A 39";
@@ -24,10 +21,10 @@ constexpr const char *TessellatorColor = "E8 6F A8 52 0C 50 49 39 04 01 27 1E 00
 // Tessellator::vertex(x, y, z)
 constexpr const char *TessellatorVertex =
     "FF C3 02 D1 EA 1B 00 FD E9 23 04 6D FD 7B 05 A9 FC 6F 06 A9 FA 67 07 A9 F8 5F 08 A9 F6 57 09 A9 F4 4F 0A A9 FD 43 "
-    "01 91 5A D0 3B D5 48 17 40 F9";
+    "01 91 5B D0 3B D5 68 17 40 F9";
 // MeshHelpers::renderMeshImmediately(ScreenContext&, Tessellator&, const MaterialPtr&, ...)
 constexpr const char *RenderMeshImmediately =
-    "FD 7B BC A9 FC 5F 01 A9 F6 57 02 A9 F4 4F 03 A9 FD 03 00 91 FF 03 0A D1 57 D0 3B D5 F6 03 00 AA";
+    "FD 7B BC A9 FC 5F 01 A9 F6 57 02 A9 F4 4F 03 A9 FD 03 00 91 FF C3 09 D1 57 D0 3B D5 F6 03 00 AA";
 
 // Easy Place
 // GameMode::buildBlock(const BlockPos& clicked, uchar face, uchar hand, bool)
@@ -43,31 +40,27 @@ constexpr const char *BlockSourceGetBlock =
     "C0 79 1F 01 09 6B ? ? ? ? 09 80 C0 79 F3 03 00 AA";
 // Returns the BlockType an ItemStack places (two-register struct, first is the BlockType)
 constexpr const char *ItemBlockType =
-    "FD 7B BE A9 F4 4F 01 A9 FD 03 00 91 F4 03 00 AA ? ? ? ? ? ? ? ? E0 03 14 AA ? ? ? ? F3 03 00 AA";
+    "FD 7B BE A9 F3 0B 00 F9 FD 03 00 91 F3 03 00 AA ? ? ? ? ? ? ? ? E0 03 13 AA ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? 08 FD "
+    "DF 08";
 // Player's item in a hand (0 = main hand)
 constexpr const char *HandItem = "28 1C 00 12 1F 05 00 71 ? ? ? ? 08 00 40 F9 01 39 41 F9 20 00 1F D6";
-// Returns the global block registry
-constexpr const char *BlockRegistry =
-    "? ? ? ? ? ? ? ? C0 03 5F D6 ? ? ? ? ? ? ? ? C0 03 5F D6 FD 7B BD A9 F5 0B 00 F9 F4 4F 02 A9 FD 03 00 91 F3 03 08 "
-    "AA ? ? ? ? ? ? ? ? 14 55 40 A9";
+// Returns the global block registry (the getter sits right before BlockLookupByName)
+constexpr const char *BlockRegistry = "? ? ? ? ? ? ? ? C0 03 5F D6 E2 03 1F 2A E3 03 1F 2A E4 03 1F 2A";
 // Looks up a BlockType by its full name (HashedString); old names like minecraft:grass resolve too
-constexpr const char *BlockLookupByName = "E2 03 1F 2A E3 03 1F 2A E4 03 1F 2A ? ? ? ? FF 83 06 D1 FD 7B 14 A9";
+constexpr const char *BlockLookupByName = "E2 03 1F 2A E3 03 1F 2A E4 03 1F 2A ? ? ? ? FF 03 02 D1 FD 7B 03 A9";
 }  // namespace sig
 
 namespace off {
-constexpr unsigned LevelRenderer_levelRendererPlayer = 0x420;
-constexpr unsigned LevelRendererPlayer_cameraPos = 0x628;          // Vec3, world position of the camera
-constexpr unsigned LevelRendererPlayer_selectionOverlayMat = 0x1030;  // MaterialPtr, translucent faces
-constexpr unsigned LevelRendererPlayer_selectionBoxMat = 0x1090;      // MaterialPtr, lines
+constexpr unsigned LevelRenderer_levelRendererPlayer = 0x430;
+constexpr unsigned LevelRendererPlayer_cameraPos = 0x620;          // Vec3, world position of the camera
+constexpr unsigned LevelRendererPlayer_selectionOverlayMat = 0x1028;  // MaterialPtr, translucent faces
+constexpr unsigned LevelRendererPlayer_selectionBoxMat = 0x1088;      // MaterialPtr, lines
 constexpr unsigned ScreenContext_colorHolder = 0x30;                // float[4] tint applied to meshes
-constexpr unsigned ScreenContext_tessellator = 0xB8;
+constexpr unsigned ScreenContext_tessellator = 0xB0;
 constexpr unsigned Tessellator_postTransformOffset = 0x1CC;         // Vec3
 constexpr unsigned GameMode_player = 0x8;
 constexpr unsigned GameMode_hasAltHit = 0x41;   // bool: the hit position below is in use
 constexpr unsigned GameMode_altHitPos = 0x6C;   // Vec3
-constexpr unsigned Actor_level = 0x1D0;
-constexpr unsigned Actor_dimension = 0x1C0;
-constexpr unsigned Dimension_blockSource = 0xD0;
 constexpr unsigned Level_vtGetHitResult = 0xA80; // vtable byte offset
 constexpr unsigned HitResult_rayStart = 0x0, HitResult_rayDir = 0xC;  // Vec3 each: the player's aim ray
 constexpr unsigned HitResult_type = 0x18, HitResult_face = 0x1C, HitResult_pos = 0x20, HitResult_hitPos = 0x2C;
