@@ -80,6 +80,12 @@ public:
     hologram::setVisible(hologramOn_);
     easyplace::setEnabled(easyPlaceOn_);
     easyplace::setAirPlace(airPlaceOn_);
+    {
+      // The launcher only collects mod buttons while it sets up its overlays (game start) or when the module is
+      // switched on, so the chest button is registered now rather than once a structure is loaded.
+      std::lock_guard lock(mu_);
+      syncPanelLocked();
+    }
     easyplace::installAsync(
         ctx.logger(), [this](const std::string &text) { panel_.toast(text); },
         [this] {
@@ -362,7 +368,8 @@ private:
     schema.node(N{.id = "refresh", .key = "refresh", .category = "main", .title = "Refresh list",
                   .description = "Rescan " + structuresDir_.string().substr(8), .type = T::Button});
     schema.node(N{.id = "controls", .key = "controls", .category = "main", .title = "Show controls",
-                  .description = "Chest button on screen: layer and move controls, and the block list.",
+                  .description = "Chest button on screen: layer and move controls, and the block list. Applies the "
+                                 "next time the game starts.",
                   .type = T::Toggle, .defaultValue = "true", .currentValue = controls_ ? "true" : "false",
                   .hasCurrentValue = true});
     if (!status_.empty())
@@ -438,7 +445,7 @@ private:
                                   << "\ncontrols=" << controls_ << "\nopacity=" << opacity_ << "\n";
   }
 
-  void syncPanelLocked() { panel_.setVisible(enabled_ && controls_ && !loadedName_.empty()); }
+  void syncPanelLocked() { panel_.setVisible(controls_); }
 
   pl::mod::ModContext *ctx_ = nullptr;
   MaterialsPanel panel_;

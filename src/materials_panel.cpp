@@ -226,7 +226,9 @@ void MaterialsPanel::redrawLocked() {
     y_ = sh * 0.14f;
 
     bevel(cmds, x_, y_, w_, h_, e, kPanel, kPanelLight, kPanelDark);
-    const std::string title = title_ + "   " + std::to_string(done_.size()) + "/" + std::to_string(materials_.size());
+    const std::string title = title_.empty() ? "No structure loaded"
+                                             : title_ + "   " + std::to_string(done_.size()) + "/" +
+                                                   std::to_string(materials_.size());
     text(cmds, x_ + font * 0.7f, y_ + (headerH_ - font) / 2, font, kText, title);
 
     // Controls: [<] Layer n/m [>] [All], then [Move up] [Move down].
