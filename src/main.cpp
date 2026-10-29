@@ -24,6 +24,8 @@ namespace fs = std::filesystem;
 namespace mm = pl::modmenu;
 
 constexpr const char *kModule = "bematica.main";
+// Its own module so the launcher shows and hides the chest button when it is switched on and off.
+constexpr const char *kControlsModule = "bematica.controls";
 
 // The launcher app can always read its own folder on shared storage; Download needs "All files access".
 fs::path appStorageDir() {
@@ -71,7 +73,19 @@ public:
                   })
                   .registerModule();
     if (!ok) ctx.logger().warn("BE-Matica: menu registration failed");
-    panel_.init(kModule, ctx.id(), [this](std::string_view key, std::string_view value) { onSetting(key, value); });
+    ok = mm::ModuleBuilder(kControlsModule, "BE-Matica Controls")
+             .description("Chest button: layer and move controls, and the block list.")
+             .modId(ctx.id())
+             .defaultEnabled(true)
+             .hideInHudEditor(false)
+             .onToggle([this](std::string_view, bool on) {
+               std::lock_guard lock(mu_);
+               controls_ = on;
+               syncPanelLocked();
+             })
+             .registerModule();
+    if (!ok) ctx.logger().warn("BE-Matica: controls module registration failed");
+    panel_.init(kControlsModule, ctx.id(), [this](std::string_view key, std::string_view value) { onSetting(key, value); });
     const auto surface = mm::getHudSurfaceSize();
     ctx.logger().info("BE-Matica: HUD surface {}x{}", surface.width, surface.height);
 
@@ -133,6 +147,7 @@ public:
     easyplace::uninstall();
     mm::clearConfigSchema(kModule);
     mm::unregisterModule(kModule);
+    mm::unregisterModule(kControlsModule);
     ctx.logger().info("BE-Matica disabled");
     return true;
   }
@@ -147,9 +162,6 @@ private:
     } else if (key == "refresh") {
       scanLocked();
       status_ = files_.empty() ? "No structures yet" : std::to_string(files_.size()) + " structures found";
-    } else if (key == "controls") {
-      controls_ = value == "true" || value == "1";
-      saveSettingsLocked();
     } else if (key == "hologram") {
       hologramOn_ = value == "true" || value == "1";
       hologram::setVisible(enabled_ && hologramOn_);
@@ -367,11 +379,6 @@ private:
     }
     schema.node(N{.id = "refresh", .key = "refresh", .category = "main", .title = "Refresh list",
                   .description = "Rescan " + structuresDir_.string().substr(8), .type = T::Button});
-    schema.node(N{.id = "controls", .key = "controls", .category = "main", .title = "Show controls",
-                  .description = "Chest button on screen: layer and move controls, and the block list. Applies the "
-                                 "next time the game starts.",
-                  .type = T::Toggle, .defaultValue = "true", .currentValue = controls_ ? "true" : "false",
-                  .hasCurrentValue = true});
     if (!status_.empty())
       schema.node(N{.id = "status", .category = "main", .title = status_, .type = T::Info});
 
@@ -435,14 +442,13 @@ private:
       if (key == "easyplace") easyPlaceOn_ = value == "1";
       else if (key == "airplace") airPlaceOn_ = value == "1";
       else if (key == "hologram") hologramOn_ = value == "1";
-      else if (key == "controls") controls_ = value == "1";
       else if (key == "opacity") opacity_ = std::clamp(std::atoi(value.c_str()), 10, 100);
     }
   }
 
   void saveSettingsLocked() {
     std::ofstream(settingsFile()) << "easyplace=" << easyPlaceOn_ << "\nairplace=" << airPlaceOn_ << "\nhologram=" << hologramOn_
-                                  << "\ncontrols=" << controls_ << "\nopacity=" << opacity_ << "\n";
+                                  << "\nopacity=" << opacity_ << "\n";
   }
 
   void syncPanelLocked() { panel_.setVisible(controls_); }
