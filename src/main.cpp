@@ -164,6 +164,8 @@ private:
     } else if (key == "refresh") {
       scanLocked();
       status_ = files_.empty() ? "No structures yet" : std::to_string(files_.size()) + " structures found";
+    } else if (key == "texture_next") {
+      status_ = textured::nextTexture();
     } else if (key == "textured") {
       texturedOn_ = value == "true" || value == "1";
       textured::setEnabled(texturedOn_);
@@ -363,6 +365,10 @@ private:
                                    "the game shows its textures. Turn off if anything looks wrong.",
                     .type = T::Toggle, .defaultValue = "false", .currentValue = texturedOn_ ? "true" : "false",
                     .hasCurrentValue = true});
+      if (texturedOn_)
+        schema.node(N{.id = "texture_next", .key = "texture_next", .category = "main", .title = "Try next texture (debug)",
+                      .description = "Switches the ghost blocks to the next game texture until they show block textures.",
+                      .type = T::Button});
       if (easyPlaceOk_) {
         schema.node(N{.id = "easyplace", .key = "easyplace", .category = "easyplace", .title = "Easy Place",
                       .description = "Tap where a ghost block is to place it there. Only the right block is "

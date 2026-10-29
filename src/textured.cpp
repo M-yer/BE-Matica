@@ -194,41 +194,66 @@ void uninstall() {
 void setEnabled(bool on) { gEnabled = on; }
 bool enabled() { return gEnabled && gReady; }
 
-// The level renderer keeps a pointer (Levimatica's 1.26.52 reading: +0x1120) to an object holding the block atlas
-// texture variant at +0x1a8. Fields moved in 1.26.60, so pointers near there are scanned once (fault-safe) for an
-// object with a texture at +0x1a8; all matches are logged and the one nearest +0x1120 is used.
-bool findBlockTexture(const char *levelRenderer, TextureVariant &out) {
-  static int found = -2;  // -2 not searched yet, -1 not found, else the level renderer field offset
-  if (found == -2) {
-    found = -1;
-    int best = 1 << 30;
-    for (unsigned lo = 0x1000; lo <= 0x1400; lo += 8) {
+// Which game texture holds the block atlas moves between versions and could not be pinned down statically, so every
+// texture variant reachable from the level renderer and its player (pointer fields -> objects -> variants) is collected
+// once (fault-safe), and a debug button cycles through them until the blocks show their textures.
+struct Candidate {
+  int base;  // 0 = level renderer, 1 = its player
+  unsigned field, variant;
+};
+std::vector<Candidate> gCandidates;
+std::atomic<int> gCandidate{0};
+bool gCollected = false;
+
+void collect(const char *bases[2]) {
+  gCollected = true;
+  std::set<uint64_t> seen;
+  for (int b = 0; b < 2; ++b)
+    for (unsigned lo = 0; lo <= 0x1400; lo += 8) {
       const char *holder = nullptr;
-      if (!safeRead(levelRenderer + lo, &holder, 8) || !holder) continue;
-      uint32_t kind = 0;
-      if (!safeRead(holder + 0x1a8 + 0x18, &kind, 4) || kind < 1 || kind > 3) continue;
-      uint64_t w[3]{}, probe = 0;
-      safeRead(holder + 0x1a8, w, sizeof(w));
-      if (!w[0] || (w[0] >> 56 != 0 && w[0] >> 56 != 0xb4) || !safeRead(reinterpret_cast<const void *>(w[0]), &probe, 8))
-        continue;
-      __android_log_print(ANDROID_LOG_INFO, "BE-Matica", "Textured: texture at levelRenderer+%#x -> +0x1a8, kind %u (%016llx %016llx)",
-                          lo, kind, static_cast<unsigned long long>(w[0]), static_cast<unsigned long long>(w[1]));
-      const int distance = std::abs(static_cast<int>(lo) - 0x1120);
-      if (distance < best) best = distance, found = static_cast<int>(lo);
+      if (!safeRead(bases[b] + lo, &holder, 8) || !holder) continue;
+      for (unsigned vo = 0; vo <= 0x400; vo += 8) {
+        uint32_t kind = 0;
+        if (!safeRead(holder + vo + 0x18, &kind, 4) || kind < 1 || kind > 3) continue;
+        uint64_t w[3]{}, probe = 0;
+        safeRead(holder + vo, w, sizeof(w));
+        if (!w[0] || (w[0] >> 56 != 0 && w[0] >> 56 != 0xb4) || !safeRead(reinterpret_cast<const void *>(w[0]), &probe, 8))
+          continue;
+        if (!seen.insert(w[0]).second) continue;  // the same texture reached another way
+        gCandidates.push_back({b, lo, vo});
+      }
     }
-    if (found < 0) __android_log_print(ANDROID_LOG_WARN, "BE-Matica", "Textured: no block texture found in the level renderer");
-    else __android_log_print(ANDROID_LOG_INFO, "BE-Matica", "Textured: using levelRenderer+%#x", found);
-  }
-  if (found < 0) return false;
-  const char *holder = nullptr;
-  return safeRead(levelRenderer + found, &holder, 8) && holder && safeRead(holder + 0x1a8, &out, sizeof(out));
+  __android_log_print(ANDROID_LOG_INFO, "BE-Matica", "Textured: %zu texture candidates", gCandidates.size());
 }
 
-bool draw(void *screenContext, void *tess, const char *levelRenderer, const std::vector<BlockCell> &blocks,
+bool candidateTexture(const char *bases[2], TextureVariant &out) {
+  if (!gCollected) collect(bases);
+  if (gCandidates.empty()) return false;
+  const Candidate &c = gCandidates[static_cast<size_t>(gCandidate.load()) % gCandidates.size()];
+  const char *holder = nullptr;
+  if (!safeRead(bases[c.base] + c.field, &holder, 8) || !holder || !safeRead(holder + c.variant, &out, sizeof(out)))
+    return false;
+  uint64_t probe = 0;
+  return out.index >= 1 && out.index <= 3 && safeRead(*reinterpret_cast<void *const *>(out.storage), &probe, 8);
+}
+
+std::string nextTexture() {
+  const int n = ++gCandidate;
+  if (gCandidates.empty()) return "No texture candidates yet (load a structure with real textures on)";
+  const Candidate &c = gCandidates[static_cast<size_t>(n) % gCandidates.size()];
+  const std::string text = "Texture candidate " + std::to_string(n % gCandidates.size() + 1) + "/" +
+                           std::to_string(gCandidates.size()) + (c.base ? " (player+" : " (renderer+") +
+                           std::to_string(c.field) + " -> +" + std::to_string(c.variant) + ")";
+  __android_log_print(ANDROID_LOG_INFO, "BE-Matica", "Textured: %s", text.c_str());
+  return text;
+}
+
+bool draw(void *screenContext, void *tess, const char *levelRenderer, const char *lrp, const std::vector<BlockCell> &blocks,
           const Structure &s, const Vec3f &cam) {
   if (!enabled()) return false;
   TextureVariant texture;
-  if (!findBlockTexture(levelRenderer, texture)) return false;
+  const char *bases[2] = {levelRenderer, lrp};
+  if (!candidateTexture(bases, texture)) return false;
   static void *blockTessellator = nullptr;
   if (!blockTessellator) {
     blockTessellator = std::aligned_alloc(16, kBlockTessellatorSize);

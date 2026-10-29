@@ -179,7 +179,7 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
       structure = gStructure;
     }
     if (tintColor) tintColor[3] = gAlpha.load(std::memory_order_relaxed);  // see-through real blocks
-    if (structure) drewTextured = textured::draw(screenContext, tess, static_cast<const char *>(self), mesh->blocks, *structure, cam);
+    if (structure) drewTextured = textured::draw(screenContext, tess, static_cast<const char *>(self), lrp, mesh->blocks, *structure, cam);
     if (tintColor) tintColor[3] = 1.0f;
   }
   if (!drewTextured && haveFace) drawQuads(screenContext, tess, faceMat, *mesh, cam, gAlpha.load(std::memory_order_relaxed));
