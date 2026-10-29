@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <unordered_set>
 #include <vector>
 
 namespace bematica {
@@ -46,7 +47,14 @@ std::array<int, 3> viewSize(const Structure &s, const View &v);
 // Faces between two shown blocks are hidden, so only the outer shell of each solid area is drawn.
 // Blocks are tinted by name so different materials are easy to tell apart. `origin` is the world
 // position of the transformed structure's minimum corner.
-HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, const View &view, size_t maxQuads);
+// `placed` (optional) holds world positions (packWorld) already built correctly; those blocks are left out entirely.
+HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, const View &view, size_t maxQuads,
+                       const std::unordered_set<uint64_t> *placed = nullptr);
+
+inline uint64_t packWorld(int x, int y, int z) {
+  return (static_cast<uint64_t>(static_cast<uint32_t>(x) & 0x1FFFFF) << 42) |
+         (static_cast<uint64_t>(static_cast<uint32_t>(y) & 0x1FFFFF) << 21) | (static_cast<uint32_t>(z) & 0x1FFFFF);
+}
 
 // Palette index the structure wants at a world block, or -1 when the block is outside the structure,
 // hidden by the layer view, or air / structure void.

@@ -29,6 +29,8 @@ void setVisible(bool visible);
 void setOpacity(float alpha);  // 0..1
 void setOutlines(bool on);     // light blue edges on every ghost block
 void setFill(bool on);         // tinted faces on every ghost block
+// A block was just placed at this world position: drop its ghost if it now matches the structure.
+void checkPlaced(int x, int y, int z);
 
 // What's shown right now, for Easy Place. `structure` is null when nothing is shown.
 struct Snapshot {

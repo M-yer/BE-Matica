@@ -21,6 +21,8 @@
 #include <cstring>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace bematica::hologram {
@@ -51,11 +53,18 @@ std::atomic_bool gPlaceAtPlayer{false};
 std::atomic_bool gVisible{true};
 std::atomic<float> gAlpha{0.45f};
 std::atomic_bool gOutlines{true}, gFill{true};
+std::unordered_set<uint64_t> gPlaced;  // world positions already built correctly (guarded by gMu)
+std::vector<uint64_t> gPending;        // positions placed since the last check (guarded by gMu)
+bool gFullCheck = true;                 // check every shown block once (guarded by gMu)
+GetBlockFn gGetBlock = nullptr;
+BlockRegistryFn gRegistry = nullptr;
+BlockLookupFn gLookup = nullptr;
 
 bool finite(const Vec3f &v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
 
 void rebuildLocked() {
-  gMesh = gStructure ? std::make_shared<const HologramMesh>(buildMesh(*gStructure, gOrigin, gView, kMaxQuads)) : nullptr;
+  gMesh = gStructure ? std::make_shared<const HologramMesh>(buildMesh(*gStructure, gOrigin, gView, kMaxQuads, &gPlaced))
+                     : nullptr;
 }
 
 void submit(void *screenContext, void *tess, void *material) {
@@ -178,6 +187,77 @@ bool aimRay(const char *levelRenderer, Vec3f &eye, Vec3f &dir) {
   return true;
 }
 
+// Ghost blocks the world already has right (same block type) are dropped from the hologram; checked twice a second
+// on the render thread through the level renderer's BlockSource, found by its class name.
+void refreshPlaced(const char *levelRenderer, const Structure &s, const HologramMesh &mesh) {
+  std::vector<uint64_t> pending;
+  bool full;
+  {
+    std::lock_guard lock(gMu);
+    full = gFullCheck;
+    gFullCheck = false;
+    pending.swap(gPending);
+  }
+  if (!full && pending.empty()) return;  // nothing placed since the last check: no world reads at all
+  static int sourceField = -2;
+  if (sourceField == -2) {
+    sourceField = -1;
+    for (unsigned off = 0; off < 0x1000 && sourceField < 0; off += 8) {
+      const void *p = nullptr;
+      if (safeRead(levelRenderer + off, &p, 8) && p && className(p) == "BlockSource") sourceField = static_cast<int>(off);
+    }
+  }
+  void *source = nullptr;
+  if (sourceField < 0 || !safeRead(levelRenderer + sourceField, &source, 8) || !source) return;
+  static std::unordered_map<std::string, uintptr_t> types;  // render thread only
+  auto typeOf = [&](const std::string &name) {
+    auto it = types.find(name);
+    if (it != types.end()) return it->second;
+    const HashedString hs(name);
+    const uintptr_t t = reinterpret_cast<uintptr_t>(gLookup(gRegistry(), &hs)) & 0x00FFFFFFFFFFFFFFULL;
+    types.emplace(name, t);
+    return t;
+  };
+  auto matches = [&](int x, int y, int z, int32_t palette) {
+    const BlockPos pos{x, y, z};
+    const void *block = gGetBlock(source, pos);
+    const void *type = nullptr;
+    return block && safeRead(static_cast<const char *>(block) + off::Block_blockType, &type, 8) && type &&
+           (reinterpret_cast<uintptr_t>(type) & 0x00FFFFFFFFFFFFFFULL) == typeOf(s.palette[palette].name);
+  };
+  std::unordered_set<uint64_t> placed;
+  {
+    std::lock_guard lock(gMu);
+    placed = gPlaced;
+  }
+  std::array<int, 3> origin;
+  View view;
+  {
+    std::lock_guard lock(gMu);
+    origin = gOrigin, view = gView;
+  }
+  bool changed = false;
+  if (full) {  // once after showing or moving: what is already built
+    for (const auto &b : mesh.blocks)
+      if (matches(b.x, b.y, b.z, b.palette) && placed.insert(packWorld(b.x, b.y, b.z)).second) changed = true;
+  }
+  auto sx = [](uint64_t v) { return static_cast<int>(v & 0x100000 ? static_cast<int64_t>(v) - 0x200000 : static_cast<int64_t>(v)); };
+  for (uint64_t key : pending) {  // just placed
+    const int x = sx(key >> 42), y = sx((key >> 21) & 0x1FFFFF), z = sx(key & 0x1FFFFF);
+    const int32_t want = expectedAt(s, origin, view, {x, y, z});
+    if (want >= 0 && matches(x, y, z, want) && placed.insert(key).second) changed = true;
+  }
+  if (!changed) return;
+  std::lock_guard lock(gMu);
+  gPlaced = std::move(placed);
+  rebuildLocked();
+}
+
+bool placedAt(int x, int y, int z) {
+  std::lock_guard lock(gMu);
+  return gPlaced.count(packWorld(x, y, z)) > 0;
+}
+
 // First ghost block along the ray within `reach` blocks (voxel walk).
 bool hoveredCell(const Structure &s, const std::array<int, 3> &origin, const View &view, Vec3f eye, Vec3f dir,
                  std::array<int, 3> &out) {
@@ -193,7 +273,7 @@ bool hoveredCell(const Structure &s, const std::array<int, 3> &origin, const Vie
     tMax[k] = d[k] != 0 ? edge * tDelta[k] : 1e30f;
   }
   for (float t = 0; t <= reach;) {
-    if (expectedAt(s, origin, view, {c[0], c[1], c[2]}) >= 0) {
+    if (expectedAt(s, origin, view, {c[0], c[1], c[2]}) >= 0 && !placedAt(c[0], c[1], c[2])) {
       out = {c[0], c[1], c[2]};
       return true;
     }
@@ -260,6 +340,8 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
       // The camera sits at eye height (1.62 blocks above the feet).
       gOrigin = {static_cast<int>(std::floor(cam.x)), static_cast<int>(std::floor(cam.y - 1.62f)),
                  static_cast<int>(std::floor(cam.z))};
+      gPlaced.clear();
+      gFullCheck = true;
       rebuildLocked();
     }
     mesh = gMesh;
@@ -302,6 +384,14 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
     drawLines(screenContext, tess, lineMat, mesh->lines, cam);
     if (gOutlines.load(std::memory_order_relaxed)) drawLines(screenContext, tess, lineMat, mesh->blockLines, cam);
   }
+  {
+    std::shared_ptr<const Structure> structure;
+    {
+      std::lock_guard lock(gMu);
+      structure = gStructure;
+    }
+    if (structure) refreshPlaced(static_cast<const char *>(self), *structure, *mesh);
+  }
   if (haveFace) {
     std::shared_ptr<const Structure> structure;
     std::array<int, 3> origin;
@@ -336,6 +426,9 @@ bool install(pl::log::Logger &log, std::string &error) {
       {"TessellatorColor", sig::TessellatorColor, reinterpret_cast<void **>(&gColor)},
       {"TessellatorVertex", sig::TessellatorVertex, reinterpret_cast<void **>(&gVertex)},
       {"RenderMeshImmediately", sig::RenderMeshImmediately, reinterpret_cast<void **>(&gRenderMesh)},
+      {"BlockSourceGetBlock", sig::BlockSourceGetBlock, reinterpret_cast<void **>(&gGetBlock)},
+      {"BlockRegistry", sig::BlockRegistry, reinterpret_cast<void **>(&gRegistry)},
+      {"BlockLookupByName", sig::BlockLookupByName, reinterpret_cast<void **>(&gLookup)},
   };
   // One pass over the game for all signatures.
   std::vector<std::string> sigs;
@@ -383,6 +476,8 @@ void uninstall() {
 
 void show(std::shared_ptr<const Structure> s, bool atPlayer) {
   std::lock_guard lock(gMu);
+  gPlaced.clear();
+  gFullCheck = true;
   gStructure = std::move(s);
   rebuildLocked();
   if (atPlayer) gPlaceAtPlayer = true;
@@ -398,12 +493,16 @@ Snapshot snapshot() {
 
 void nudge(int dx, int dy, int dz) {
   std::lock_guard lock(gMu);
+  gPlaced.clear();
+  gFullCheck = true;
   gOrigin[0] += dx, gOrigin[1] += dy, gOrigin[2] += dz;
   rebuildLocked();
 }
 
 void setView(const View &view) {
   std::lock_guard lock(gMu);
+  gPlaced.clear();
+  gFullCheck = true;
   gView = view;
   rebuildLocked();
 }
@@ -411,5 +510,9 @@ void setVisible(bool visible) { gVisible = visible; }
 void setOpacity(float alpha) { gAlpha = std::clamp(alpha, 0.05f, 1.0f); }
 void setOutlines(bool on) { gOutlines = on; }
 void setFill(bool on) { gFill = on; }
+void checkPlaced(int x, int y, int z) {
+  std::lock_guard lock(gMu);
+  gPending.push_back(packWorld(x, y, z));
+}
 
 }  // namespace bematica::hologram

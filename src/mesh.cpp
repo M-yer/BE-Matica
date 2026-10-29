@@ -51,7 +51,8 @@ std::array<int, 3> viewSize(const Structure &s, const View &v) {
   return v.rotation % 2 ? std::array<int, 3>{s.size[2], s.size[1], s.size[0]} : s.size;
 }
 
-HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, const View &view, size_t maxQuads) {
+HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, const View &view, size_t maxQuads,
+                       const std::unordered_set<uint64_t> *placed) {
   HologramMesh mesh;
   const int sx = s.size[0], sy = s.size[1], sz = s.size[2];
   const int rot = ((view.rotation % 4) + 4) % 4;
@@ -71,13 +72,6 @@ HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, const View
     paletteEmpty[k] = isEmpty(s.palette[k].name);
     tint(s.palette[k].name, colors[k][0], colors[k][1], colors[k][2]);
   }
-  for (int x = 0; x < sx; ++x)
-    for (int y = 0; y < sy; ++y)
-      for (int z = 0; z < sz; ++z) {
-        const size_t i = s.index(x, y, z);
-        const int32_t idx = s.layers[0][i];
-        solid[i] = idx >= 0 && !paletteEmpty[idx] && shownLayer(y);
-      }
 
   // Structure-local point (0..sx, 0..sy, 0..sz) to world, applying mirror then rotation.
   auto toWorld = [&](float x, float y, float z) {
@@ -90,6 +84,20 @@ HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, const View
     }
     return Vec3f{origin[0] + x, origin[1] + y, origin[2] + z};
   };
+
+  for (int x = 0; x < sx; ++x)
+    for (int y = 0; y < sy; ++y)
+      for (int z = 0; z < sz; ++z) {
+        const size_t i = s.index(x, y, z);
+        const int32_t idx = s.layers[0][i];
+        solid[i] = idx >= 0 && !paletteEmpty[idx] && shownLayer(y);
+        if (solid[i] && placed && !placed->empty()) {
+          const Vec3f w = toWorld(x + 0.5f, y + 0.5f, z + 0.5f);
+          if (placed->count(packWorld(static_cast<int>(std::floor(w.x)), static_cast<int>(std::floor(w.y)),
+                                      static_cast<int>(std::floor(w.z)))))
+            solid[i] = false;
+        }
+      }
 
   struct PairHash {
     size_t operator()(const std::pair<uint64_t, uint64_t> &p) const { return std::hash<uint64_t>()(p.first * 31 + p.second); }

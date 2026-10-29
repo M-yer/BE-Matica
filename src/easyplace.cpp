@@ -309,7 +309,19 @@ bool afterPlace(const Context &ctx, bool placed) {
   return placed;
 }
 
+bool buildBlockInner(void *gm, const BlockPos *pos, uint8_t face, uint8_t hand, bool flag);
+
+// Every placement (vanilla or Easy Place) tells the hologram which spot to recheck, so it never polls the world.
 bool buildBlockDetour(void *gm, const BlockPos *pos, uint8_t face, uint8_t hand, bool flag) {
+  const bool placed = buildBlockInner(gm, pos, face, hand, flag);
+  if (placed && pos && face <= 5) {
+    hologram::checkPlaced(pos->x + kFaceDir[face][0], pos->y + kFaceDir[face][1], pos->z + kFaceDir[face][2]);
+    hologram::checkPlaced(pos->x, pos->y, pos->z);  // replaceable blocks (grass) are placed into
+  }
+  return placed;
+}
+
+bool buildBlockInner(void *gm, const BlockPos *pos, uint8_t face, uint8_t hand, bool flag) {
   BuildBlockFn orig;
   while (!(orig = gBuildOrig.load(std::memory_order_acquire))) std::this_thread::yield();
   if (tInside) return orig(gm, pos, face, hand, flag);
@@ -370,7 +382,9 @@ bool useItemDetour(void *gm, void *stack, uint32_t flag) {
     return false;
   }
   trace("EasyPlace air: placing at {} {} {}", target[0], target[1], target[2]);
-  return afterPlace(ctx, placeAt(gm, ctx.player, ctx.world, target, 0, false));
+  const bool placed = placeAt(gm, ctx.player, ctx.world, target, 0, false);
+  if (placed) hologram::checkPlaced(target[0], target[1], target[2]);
+  return afterPlace(ctx, placed);
 }
 
 bool install(pl::log::Logger &log, std::string &error) {
