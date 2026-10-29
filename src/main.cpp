@@ -278,6 +278,40 @@ private:
     return true;
   }
 
+  // The Help tab: one Info row per topic (the launcher caps a description at 1024 characters).
+  static void addHelpNodes(mm::ConfigSchemaBuilder &schema) {
+    using N = mm::ConfigNodeV2;
+    static constexpr const char *kTopics[][2] = {
+        {"Getting started",
+         "1. On the BE-Matica tab, tap Import structure and pick a .mcstructure (or a Java .litematic, which is "
+         "converted).\n2. Choose it under Structure. The hologram appears with its corner where you stand.\n"
+         "3. Build inside the blue ghost blocks. Blocks you place correctly disappear from the hologram."},
+        {"Control panel",
+         "The floating panel is on screen while BE-Matica Controls is on. Drag its header (the dots) to move it; "
+         "the arrow folds it away.\nThe header shows how much of the shown structure is built.\n"
+         "Move tab: X / Y / Z shift the hologram one block, Rotate +90\u00B0 turns it, Mirror flips it, "
+         "< and > pick a single layer, All shows every layer.\nBlocks tab: every block the structure needs; tap a "
+         "row to tick it off."},
+        {"Lock and saved placement",
+         "The structure, its position, rotation, mirror and layer view are saved whenever they change, and come "
+         "back when you restart the game or rejoin.\nThe padlock in the panel header locks the placement: moving, "
+         "rotating, mirroring and Move hologram to me are blocked until you unlock it."},
+        {"Easy Place",
+         "Turn it on in the Easy Place tab. Hold the block the structure wants, aim at its ghost block and tap: "
+         "it is placed exactly there. Holding the wrong block tells you which one to hold.\nWater and lava: "
+         "use a bucket and aim at the spot; the game pours it as usual."},
+        {"Hologram look",
+         "Hologram opacity, Block outlines and Tinted fill change how ghost blocks are drawn. Show hologram hides "
+         "it without unloading the structure."},
+        {"Where files go",
+         "Imported structures are kept in Android/data/<launcher>/files/BE-Matica/structures. Tap Refresh list "
+         "after adding files there yourself."},
+    };
+    for (size_t k = 0; k < std::size(kTopics); ++k)
+      schema.node(N{.id = "help" + std::to_string(k), .category = "help", .title = kTopics[k][0],
+                    .description = kTopics[k][1], .type = mm::ConfigControlTypeV2::Info});
+  }
+
   void syncLayerLocked() {
     panel_.setLayer(view_.layer, loadedName_.empty() ? 0 : loaded_.size[1], view_.layers != View::Layers::All);
     panel_.setState(hologramOn_, easyPlaceOn_, view_.mirror, locked_);
@@ -395,6 +429,7 @@ private:
       if (hologramOk_) schema.category("place", "Placement & Layers");
       schema.category("materials", "Materials");
     }
+    schema.category("help", "Help");
 
     schema.node(N{.id = "import", .key = "import", .category = "main", .title = "Import structure",
                   .description = "Pick a .mcstructure file, or a Java .litematic to convert, from your phone.", .type = T::Button});
@@ -469,6 +504,8 @@ private:
                       .title = std::to_string(materials_[k].count) + "   " + materials_[k].name, .section = "Materials",
                       .type = T::Info});
     }
+
+    addHelpNodes(schema);
 
     publishing_ = true;
     if (!mm::setConfigSchemaJson(kModule, schema.toJson())) ctx_->logger().warn("BE-Matica: settings page rejected");
