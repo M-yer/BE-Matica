@@ -31,6 +31,8 @@ void setOutlines(bool on);     // light blue edges on every ghost block
 void setFill(bool on);         // tinted faces on every ghost block
 // A block was just placed at this world position: drop its ghost if it now matches the structure.
 void checkPlaced(int x, int y, int z);
+// Called on the render thread whenever the count of correctly built blocks (of those shown) changes.
+void setProgressListener(std::function<void(size_t built, size_t total)> listener);
 
 // What's shown right now, for Easy Place. `structure` is null when nothing is shown.
 struct Snapshot {

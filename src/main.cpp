@@ -87,6 +87,7 @@ public:
              .registerModule();
     if (!ok) ctx.logger().warn("BE-Matica: controls module registration failed");
     panel_.init(kControlsModule, ctx.id(), [this](std::string_view key, std::string_view value) { onSetting(key, value); });
+    hologram::setProgressListener([this](size_t built, size_t total) { panel_.setProgress(built, total); });
     const auto surface = mm::getHudSurfaceSize();
     ctx.logger().info("BE-Matica: HUD surface {}x{}", surface.width, surface.height);
 
@@ -146,6 +147,7 @@ public:
   }
 
   bool disable(pl::mod::ModContext &ctx) {
+    hologram::setProgressListener(nullptr);
     panel_.shutdown();
     hologram::uninstall();
     easyplace::uninstall();
@@ -180,6 +182,7 @@ private:
       easyPlaceOn_ = value == "true" || value == "1";
       easyplace::setEnabled(easyPlaceOn_);
       saveSettingsLocked();
+      syncLayerLocked();
       return;
     } else if (key == "airplace") {
       airPlaceOn_ = value == "true" || value == "1";
@@ -247,6 +250,7 @@ private:
 
   void syncLayerLocked() {
     panel_.setLayer(view_.layer, loadedName_.empty() ? 0 : loaded_.size[1], view_.layers != View::Layers::All);
+    panel_.setState(hologramOn_, easyPlaceOn_, view_.mirror);
   }
 
   // Converts a Java Litematica schematic and keeps it as <name>.mcstructure next to the others.

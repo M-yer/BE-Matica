@@ -117,6 +117,20 @@ void MaterialsPanel::setLayer(int layer, int layerCount, bool single) {
   redrawLocked();
 }
 
+void MaterialsPanel::setState(bool hologram, bool easyPlace, bool mirror) {
+  std::lock_guard lock(mu_);
+  if (hologram == hologram_ && easyPlace == easyPlace_ && mirror == mirror_) return;
+  hologram_ = hologram, easyPlace_ = easyPlace, mirror_ = mirror;
+  redrawLocked();
+}
+
+void MaterialsPanel::setProgress(size_t built, size_t total) {
+  std::lock_guard lock(mu_);
+  if (built == built_ && total == total_) return;
+  built_ = built, total_ = total;
+  redrawLocked();
+}
+
 void MaterialsPanel::toggleOpen() {
   std::lock_guard lock(mu_);
   open_ = !open_;
@@ -124,7 +138,7 @@ void MaterialsPanel::toggleOpen() {
 }
 
 bool MaterialsPanel::insideLocked(float x, float y) const {
-  return open_ && x >= x_ && x <= x_ + w_ && y >= y_ && y <= y_ + h_;
+  return visible_ && open_ && x >= x_ && x <= x_ + w_ && y >= y_ && y <= y_ + h_;
 }
 
 bool MaterialsPanel::onTouch(const pl::input::TouchEvent &e) {
@@ -135,8 +149,10 @@ bool MaterialsPanel::onTouch(const pl::input::TouchEvent &e) {
     if (activePointer_ < 0) {
       if ((action == kDown || action == kPointerDown) && insideLocked(e.x, e.y)) {
         activePointer_ = e.pointerId;
+        downX_ = lastX_ = e.x;
         downY_ = lastY_ = e.y;
         dragged_ = false;
+        movingPanel_ = e.y < y_ + headerH_;  // the header drags the panel; its buttons still work as taps
         return true;
       }
       return false;
@@ -144,12 +160,15 @@ bool MaterialsPanel::onTouch(const pl::input::TouchEvent &e) {
     if (e.pointerId != activePointer_) return insideLocked(e.x, e.y);
 
     if (action == kMove) {
-      if (downY_ > listTop_ && std::abs(e.y - downY_) > row_ * 0.3f) dragged_ = true;
-      if (dragged_) {
+      if (std::hypot(e.x - downX_, e.y - downY_) > row_ * 0.3f) dragged_ = true;
+      if (dragged_ && movingPanel_) {
+        px_ += e.x - lastX_, py_ += e.y - lastY_;
+        redrawLocked();
+      } else if (dragged_ && tab_ == Tab::Blocks && downY_ > listTop_) {
         scroll_ -= e.y - lastY_;
         redrawLocked();
       }
-      lastY_ = e.y;
+      lastX_ = e.x, lastY_ = e.y;
       return true;
     }
     if (action != kUp && action != kPointerUp && action != kCancel) return true;
@@ -157,7 +176,19 @@ bool MaterialsPanel::onTouch(const pl::input::TouchEvent &e) {
     if (dragged_ || action == kCancel) return true;
     for (const auto &c : controls_)
       if (e.x >= c.x && e.x <= c.x + c.w && e.y >= c.y && e.y <= c.y + c.h) key = c.key, value = c.value;
-    if (key.empty() && e.y > listTop_) {
+    // Panel-only buttons start with '_' and never reach the mod.
+    if (key == "_tab") {
+      tab_ = value == "blocks" ? Tab::Blocks : Tab::Move;
+      collapsed_ = false;
+      redrawLocked();
+      return true;
+    }
+    if (key == "_collapse") {
+      collapsed_ = !collapsed_;
+      redrawLocked();
+      return true;
+    }
+    if (key.empty() && tab_ == Tab::Blocks && e.y > listTop_ && e.y < listBottom_) {
       const auto idx = static_cast<size_t>((e.y - listTop_ + scroll_) / row_);
       if (idx < materials_.size()) {
         const auto &name = materials_[idx].name;
@@ -173,114 +204,172 @@ bool MaterialsPanel::onTouch(const pl::input::TouchEvent &e) {
 
 namespace {
 
-// Bedrock-style look drawn from plain rectangles: light grey panels with a white top-left edge, a dark
-// bottom-right edge and a black outline; raised buttons with a thick dark bottom edge.
-constexpr uint32_t kOutline = 0xFF000000, kPanel = 0xFFC6C6C6, kPanelLight = 0xFFFFFFFF, kPanelDark = 0xFF555555;
-constexpr uint32_t kButton = 0xFFD0D1D4, kButtonLight = 0xFFF1F1F2, kButtonDark = 0xFF58585A;
-constexpr uint32_t kGreen = 0xFF3C8527, kGreenLight = 0xFF6CC349, kGreenDark = 0xFF1D4D13;
-constexpr uint32_t kText = 0xFF3F3F3F, kTextShadow = 0xFF2A2A2A, kDoneText = 0xFF2E6B1E;
+// Dark translucent panel with flat buttons; blue marks what is on or selected.
+constexpr uint32_t kPanel = 0xE6202327, kHeader = 0xF016181B, kButton = 0xFF353A40, kActive = 0xFF1C7ED6;
+constexpr uint32_t kWell = 0xFF15171A, kStripe = 0x10FFFFFF, kText = 0xFFF1F3F5, kDim = 0xFFA6ACB3, kDone = 0xFF7BD389;
 
 void rect(std::vector<mm::DrawCommand> &cmds, float x, float y, float w, float h, uint32_t color) {
   cmds.push_back({.type = mm::DrawCommandType::RectFilled, .x = x, .y = y, .w = w, .h = h, .color = color});
 }
 
-// Outline, face, light top/left and dark bottom/right edges. `drop` thickens the bottom edge (raised button).
-void bevel(std::vector<mm::DrawCommand> &cmds, float x, float y, float w, float h, float e, uint32_t face,
-           uint32_t light, uint32_t dark, float drop = 1) {
-  rect(cmds, x, y, w, h, kOutline);
-  rect(cmds, x + e, y + e, w - 2 * e, h - 2 * e, face);
-  rect(cmds, x + e, y + e, w - 2 * e, e, light);
-  rect(cmds, x + e, y + e, e, h - 2 * e, light);
-  rect(cmds, x + e, y + h - e - e * drop, w - 2 * e, e * drop, dark);
-  rect(cmds, x + w - 2 * e, y + e, e, h - 2 * e, dark);
+void text(std::vector<mm::DrawCommand> &cmds, float x, float y, float size, uint32_t color, std::string s) {
+  cmds.push_back({.type = mm::DrawCommandType::Text, .x = x, .y = y, .color = color, .size = size, .text = std::move(s)});
 }
 
-void text(std::vector<mm::DrawCommand> &cmds, float x, float y, float size, uint32_t color, std::string s,
-          bool shadow = false) {
-  if (shadow)
-    cmds.push_back({.type = mm::DrawCommandType::Text, .x = x + size * 0.08f, .y = y + size * 0.08f,
-                    .color = kTextShadow, .size = size, .text = s});
-  cmds.push_back({.type = mm::DrawCommandType::Text, .x = x, .y = y, .color = color, .size = size, .text = std::move(s)});
+// Rough width of a label; multi-byte UTF-8 characters count once.
+float textWidth(const std::string &s, float font) {
+  size_t n = 0;
+  for (unsigned char c : s) n += (c & 0xC0) != 0x80;
+  return font * 0.55f * n;
+}
+
+enum class Icon { List, Move, Up, Down };
+
+// Icons from plain rectangles, centred in an s x s square at (x, y).
+void icon(std::vector<mm::DrawCommand> &cmds, Icon which, float x, float y, float s) {
+  const float cx = x + s / 2, cy = y + s / 2, t = std::max(2.0f, std::round(s * 0.09f));
+  switch (which) {
+  case Icon::List:
+    for (int k = -1; k <= 1; ++k) rect(cmds, cx - s * 0.25f, cy + k * s * 0.2f - t / 2, s * 0.5f, t, kText);
+    break;
+  case Icon::Move:
+    rect(cmds, cx - s * 0.3f, cy - t / 2, s * 0.6f, t, kText);
+    rect(cmds, cx - t / 2, cy - s * 0.3f, t, s * 0.6f, kText);
+    for (int k = 1; k <= 2; ++k) {  // stepped arrowheads at the four tips
+      const float a = s * 0.3f - k * t, b = t * (2 * k + 1);
+      rect(cmds, cx - b / 2, cy - a - t / 2, b, t, kText);
+      rect(cmds, cx - b / 2, cy + a - t / 2, b, t, kText);
+      rect(cmds, cx - a - t / 2, cy - b / 2, t, b, kText);
+      rect(cmds, cx + a - t / 2, cy - b / 2, t, b, kText);
+    }
+    break;
+  case Icon::Up:
+  case Icon::Down:
+    for (int k = 0; k < 4; ++k) {  // a stepped triangle, 4 rows
+      const float rowY = which == Icon::Up ? cy - s * 0.12f + k * t : cy + s * 0.12f - (k + 1) * t;
+      rect(cmds, cx - (k + 0.5f) * t, rowY, (2 * k + 1) * t, t, kText);
+    }
+    break;
+  }
 }
 
 }  // namespace
 
 void MaterialsPanel::redrawLocked() {
   std::vector<mm::DrawCommand> cmds;
+  controls_.clear();
   const auto surface = mm::getHudSurfaceSize();
   const float sh = surface.height > 0 ? surface.height : 1080, sw = surface.width > 0 ? surface.width : 2400;
-  const float e = std::max(2.0f, std::round(sh * 0.0035f));  // one "pixel" of the bevels
   if (!toast_.empty()) {
-    const float font = sh * 0.04f, w = font * 0.55f * toast_.size() + font * 1.6f, h = font * 1.9f;
+    const float font = sh * 0.04f, w = textWidth(toast_, font) + font * 1.6f, h = font * 1.9f;
     const float x = (sw - w) / 2, y = sh * 0.18f;
-    bevel(cmds, x, y, w, h, e, kPanel, kPanelLight, kPanelDark);
+    rect(cmds, x, y, w, h, kPanel);
     text(cmds, x + font * 0.8f, y + (h - font) / 2, font, kText, toast_);
   }
   if (visible_ && open_) {
-    const float font = sh * 0.034f;
+    const float font = sh * 0.032f, pad = font * 0.4f, ctrlH = font * 2.1f;
     row_ = font * 1.55f;
-    headerH_ = row_ * 1.4f;
-    w_ = std::min(sw * 0.36f, font * 20);
-    h_ = sh * 0.74f;
-    x_ = sw * 0.02f;
-    y_ = sh * 0.14f;
+    headerH_ = font * 2.4f;
+    w_ = font * 15;
+    if (px_ < 0) px_ = sw * 0.06f, py_ = sh * 0.1f;
+    px_ = std::clamp(px_, 0.0f, sw - w_);
+    py_ = std::clamp(py_, 0.0f, sh - headerH_);
+    x_ = px_, y_ = py_;
 
-    bevel(cmds, x_, y_, w_, h_, e, kPanel, kPanelLight, kPanelDark);
-    const std::string title = title_.empty() ? "No structure loaded"
-                                             : title_ + "   " + std::to_string(done_.size()) + "/" +
-                                                   std::to_string(materials_.size());
-    text(cmds, x_ + font * 0.7f, y_ + (headerH_ - font) / 2, font, kText, title);
-
-    // Controls: [<] Layer n/m [>] [All], then [Move up] [Move down].
-    controls_.clear();
-    const float pad = font * 0.4f, ctrlH = row_ * 1.15f, rowY1 = y_ + headerH_ + pad, rowY2 = rowY1 + ctrlH + pad;
-    const float unit = (w_ - pad * 5) / 6;  // row 1: arrow, label (3 units), arrow, All
-    auto button = [&](float bx, float by, float bw, const std::string &label, const char *key, const char *value,
-                      bool active) {
-      if (active) bevel(cmds, bx, by, bw, ctrlH, e, kGreen, kGreenLight, kGreenDark, 2);
-      else bevel(cmds, bx, by, bw, ctrlH, e, kButton, kButtonLight, kButtonDark, 2);
-      text(cmds, bx + (bw - font * 0.55f * label.size()) / 2, by + (ctrlH - font) / 2 - e / 2, font,
-           active ? 0xFFFFFFFF : kText, label, active);
-      controls_.push_back({bx, by, bw, ctrlH, key, value});
+    auto button = [&](float bx, float by, float bw, float bh, const std::string &label, const char *key,
+                      const char *value, bool active) {
+      rect(cmds, bx, by, bw, bh, active ? kActive : kButton);
+      if (!label.empty()) text(cmds, bx + (bw - textWidth(label, font)) / 2, by + (bh - font) / 2, font, kText, label);
+      controls_.push_back({bx, by, bw, bh, key, value});
     };
-    const std::string layerText = single_ ? "Layer " + std::to_string(layer_ + 1) + "/" + std::to_string(layerCount_)
-                                          : "All " + std::to_string(layerCount_) + " layers";
-    button(x_ + pad, rowY1, unit, "<", "layer_down", "", false);
-    text(cmds, x_ + pad * 2 + unit + (unit * 3 - font * 0.55f * layerText.size()) / 2, rowY1 + (ctrlH - font) / 2,
-         font, kText, layerText);
-    button(x_ + pad * 3 + unit * 4, rowY1, unit, ">", "layer_up", "", false);
-    button(x_ + pad * 4 + unit * 5, rowY1, unit, "All", "layers", "all", !single_);
-    const float half = (w_ - pad * 3) / 2;
-    button(x_ + pad, rowY2, half, "Move up", "up", "", false);
-    button(x_ + pad * 2 + half, rowY2, half, "Move down", "down", "", false);
-    listTop_ = rowY2 + ctrlH + pad;
 
-    // The block list sits in a sunken well: dark top-left edge, light bottom-right.
-    const float wellX = x_ + pad, wellW = w_ - pad * 2, wellBottom = y_ + h_ - pad;
-    bevel(cmds, wellX, listTop_ - e, wellW, wellBottom - listTop_ + e, e, 0xFFB4B4B4, kPanelDark, kPanelLight);
+    // Body first, so the header is drawn over it.
+    float bodyH = 0;
+    if (!collapsed_) {
+      const float top = y_ + headerH_ + pad, half = (w_ - pad * 3) / 2;
+      float yy = top;
+      if (tab_ == Tab::Move) {
+        static constexpr const char *kGrid[][4] = {{"X -", "west", "X +", "east"},
+                                                  {"Y -", "down", "Y +", "up"},
+                                                  {"Z -", "north", "Z +", "south"}};
+        for (const auto &r : kGrid) {
+          button(x_ + pad, yy, half, ctrlH, r[0], r[1], "", false);
+          button(x_ + pad * 2 + half, yy, half, ctrlH, r[2], r[3], "", false);
+          yy += ctrlH + pad;
+        }
+        button(x_ + pad, yy, half, ctrlH, "Rotate +90°", "rotate", "", false);
+        button(x_ + pad * 2 + half, yy, half, ctrlH, "Mirror", "mirror", "", mirror_);
+        yy += ctrlH + pad * 2;
 
-    const float contentH = row_ * materials_.size();
-    const float maxScroll = std::max(0.0f, contentH - (wellBottom - listTop_));
-    scroll_ = std::clamp(scroll_, 0.0f, maxScroll);
+        const float unit = (w_ - pad * 5) / 6;  // arrow, label (3 units), arrow, All
+        const std::string layerText = layerCount_ == 0 ? "No layers"
+                                      : single_ ? "Layer " + std::to_string(layer_ + 1) + "/" + std::to_string(layerCount_)
+                                                : "All " + std::to_string(layerCount_) + " layers";
+        button(x_ + pad, yy, unit, ctrlH, "<", "layer_down", "", false);
+        text(cmds, x_ + pad * 2 + unit + (unit * 3 - textWidth(layerText, font)) / 2, yy + (ctrlH - font) / 2, font,
+             kText, layerText);
+        button(x_ + pad * 3 + unit * 4, yy, unit, ctrlH, ">", "layer_up", "", false);
+        button(x_ + pad * 4 + unit * 5, yy, unit, ctrlH, "All", "layers", "all", !single_);
+        yy += ctrlH + pad * 2;
 
-    const float top = listTop_;
-    const size_t first = static_cast<size_t>(scroll_ / row_);
-    for (size_t k = first; k < materials_.size(); ++k) {
-      const float ry = top + k * row_ - scroll_;
-      if (ry + row_ > wellBottom) break;
-      const bool done = done_.count(materials_[k].name) > 0;
-      if (k % 2) rect(cmds, wellX + e * 2, ry, wellW - e * 4, row_, 0x14000000);
-      const uint32_t color = done ? kDoneText : kText;
-      text(cmds, wellX + font * 0.5f, ry + (row_ - font) / 2, font, color,
-           (done ? "\xE2\x9C\x93 " : "") + materials_[k].name);
-      text(cmds, x_ + w_ * 0.62f, ry + (row_ - font) / 2, font, color, countText(materials_[k].count));
+        button(x_ + pad, yy, half, ctrlH, "Hologram", "hologram", hologram_ ? "0" : "1", hologram_);
+        button(x_ + pad * 2 + half, yy, half, ctrlH, "Easy Place", "easyplace", easyPlace_ ? "0" : "1", easyPlace_);
+        yy += ctrlH + pad;
+      } else {
+        const std::string title = title_.empty() ? "No structure loaded"
+                                                 : title_ + "   " + std::to_string(done_.size()) + "/" +
+                                                       std::to_string(materials_.size());
+        text(cmds, x_ + pad * 2, yy + (row_ - font) / 2, font, kDim, title);
+        yy += row_ + pad;
+        listTop_ = yy;
+        listBottom_ = listTop_ + row_ * 9;
+        const float wellX = x_ + pad, wellW = w_ - pad * 2;
+        rect(cmds, wellX, listTop_, wellW, listBottom_ - listTop_, kWell);
+
+        const float contentH = row_ * materials_.size();
+        const float maxScroll = std::max(0.0f, contentH - (listBottom_ - listTop_));
+        scroll_ = std::clamp(scroll_, 0.0f, maxScroll);
+        for (size_t k = static_cast<size_t>(scroll_ / row_); k < materials_.size(); ++k) {
+          const float ry = listTop_ + k * row_ - scroll_;
+          if (ry + row_ > listBottom_) break;
+          const bool done = done_.count(materials_[k].name) > 0;
+          if (k % 2) rect(cmds, wellX, ry, wellW, row_, kStripe);
+          const uint32_t color = done ? kDone : kText;
+          text(cmds, wellX + font * 0.5f, ry + (row_ - font) / 2, font, color,
+               (done ? "\xE2\x9C\x93 " : "") + materials_[k].name);
+          text(cmds, x_ + w_ * 0.62f, ry + (row_ - font) / 2, font, done ? kDone : kDim,
+               countText(materials_[k].count));
+        }
+        if (maxScroll > 0) {
+          const float trackH = listBottom_ - listTop_, barH = std::max(row_, trackH * trackH / contentH);
+          rect(cmds, wellX + wellW - font * 0.4f, listTop_ + (trackH - barH) * (scroll_ / maxScroll), font * 0.3f,
+               barH, kDim);
+        }
+        yy = listBottom_ + pad;
+      }
+      bodyH = yy - (y_ + headerH_);
     }
+    h_ = headerH_ + bodyH;
+    // The background's height is only known now, so it goes in under the body (after the toast's 2 commands).
+    cmds.insert(cmds.begin() + (toast_.empty() ? 0 : 2),
+                mm::DrawCommand{.type = mm::DrawCommandType::RectFilled, .x = x_, .y = y_, .w = w_, .h = h_,
+                                .color = kPanel});
 
-    if (maxScroll > 0) {  // scrollbar thumb, raised like a button
-      const float trackH = wellBottom - listTop_, barH = std::max(row_, trackH * trackH / contentH);
-      bevel(cmds, wellX + wellW - font * 0.55f, top + (trackH - barH) * (scroll_ / maxScroll), font * 0.45f, barH, e,
-            kButton, kButtonLight, kButtonDark);
-    }
+    // Header: progress, then Blocks / Move tabs and collapse at the right.
+    rect(cmds, x_, y_, w_, headerH_, kHeader);
+    const std::string progress =
+        total_ == 0 ? "--" : std::to_string(static_cast<int>(built_ * 100 / total_)) + "% built";
+    text(cmds, x_ + pad * 2, y_ + (headerH_ - font) / 2, font, total_ && built_ == total_ ? kDone : kText, progress);
+    const float s = headerH_ - pad * 2;
+    float bx = x_ + w_ - pad - s;
+    button(bx, y_ + pad, s, s, "", "_collapse", "", false);
+    icon(cmds, collapsed_ ? Icon::Down : Icon::Up, bx, y_ + pad, s);
+    bx -= s + pad;
+    button(bx, y_ + pad, s, s, "", "_tab", "move", !collapsed_ && tab_ == Tab::Move);
+    icon(cmds, Icon::Move, bx, y_ + pad, s);
+    bx -= s + pad;
+    button(bx, y_ + pad, s, s, "", "_tab", "blocks", !collapsed_ && tab_ == Tab::Blocks);
+    icon(cmds, Icon::List, bx, y_ + pad, s);
   }
   mm::submitDrawCommands(moduleId_, cmds);
 }

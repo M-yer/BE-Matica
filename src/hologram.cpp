@@ -57,6 +57,8 @@ std::atomic_bool gOutlines{true}, gFill{true};
 std::unordered_set<uint64_t> gPlaced;  // world positions already built correctly (guarded by gMu)
 std::vector<uint64_t> gPending;        // positions placed since the last check (guarded by gMu)
 bool gFullCheck = true;                 // check every shown block once (guarded by gMu)
+size_t gTotal = 0;                      // shown structure blocks, counted by the full check (guarded by gMu)
+std::function<void(size_t, size_t)> gProgress;  // guarded by gMu
 GetBlockFn gGetBlock = nullptr;
 BlockRegistryFn gRegistry = nullptr;
 BlockLookupFn gLookup = nullptr;
@@ -248,6 +250,7 @@ void refreshPlaced(const char *levelRenderer, const Structure &s) {
     return ok;
   };
   bool changed = false;
+  size_t total = 0;
   if (full) {  // once after showing or moving: every cell, since the mesh only holds the visible shell
     const auto size = viewSize(s, view);
     for (int x = 0; x < size[0]; ++x)
@@ -255,6 +258,7 @@ void refreshPlaced(const char *levelRenderer, const Structure &s) {
         for (int z = 0; z < size[2]; ++z) {
           const int wx = origin[0] + x, wy = origin[1] + y, wz = origin[2] + z;
           const int32_t want = expectedAt(s, origin, view, {wx, wy, wz});
+          if (want >= 0) ++total;
           if (want >= 0 && matches(wx, wy, wz, want) && placed.insert(packWorld(wx, wy, wz)).second) changed = true;
         }
   }
@@ -266,11 +270,20 @@ void refreshPlaced(const char *levelRenderer, const Structure &s) {
   }
   if (gLog)
     gLog->info("Hologram: {} check, {} placed, {} built cells", full ? "full" : "placement", pending.size(), placed.size());
-  if (!changed) return;
-  std::lock_guard lock(gMu);
-  if (gFullCheck) return;  // moved while checking: these positions are stale, the next frame redoes it
-  gPlaced = std::move(placed);
-  rebuildLocked();
+  if (!changed && !full) return;
+  std::function<void(size_t, size_t)> progress;
+  size_t built;
+  {
+    std::lock_guard lock(gMu);
+    if (gFullCheck) return;  // moved while checking: these positions are stale, the next frame redoes it
+    if (full) gTotal = total;
+    if (changed) {
+      gPlaced = std::move(placed);
+      rebuildLocked();
+    }
+    progress = gProgress, built = gPlaced.size(), total = gTotal;
+  }
+  if (progress) progress(built, total);
 }
 
 bool placedAt(int x, int y, int z) {
@@ -531,6 +544,10 @@ void setVisible(bool visible) { gVisible = visible; }
 void setOpacity(float alpha) { gAlpha = std::clamp(alpha, 0.05f, 1.0f); }
 void setOutlines(bool on) { gOutlines = on; }
 void setFill(bool on) { gFill = on; }
+void setProgressListener(std::function<void(size_t, size_t)> listener) {
+  std::lock_guard lock(gMu);
+  gProgress = std::move(listener);
+}
 void checkPlaced(int x, int y, int z) {
   std::lock_guard lock(gMu);
   gPending.push_back(packWorld(x, y, z));
