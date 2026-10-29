@@ -11,7 +11,9 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -214,7 +216,8 @@ void collect(const char *bases[2]) {
       if (!safeRead(bases[b] + lo, &holder, 8) || !holder) continue;
       for (unsigned vo = 0; vo <= 0x400; vo += 8) {
         uint32_t kind = 0;
-        if (!safeRead(holder + vo + 0x18, &kind, 4) || kind < 1 || kind > 3) continue;
+        // Terrain is drawn with ServerTextures (kind 3), so only those can be the block atlas.
+        if (!safeRead(holder + vo + 0x18, &kind, 4) || kind != 3) continue;
         uint64_t w[3]{}, probe = 0;
         safeRead(holder + vo, w, sizeof(w));
         if (!w[0] || (w[0] >> 56 != 0 && w[0] >> 56 != 0xb4) || !safeRead(reinterpret_cast<const void *>(w[0]), &probe, 8))
@@ -226,9 +229,23 @@ void collect(const char *bases[2]) {
   __android_log_print(ANDROID_LOG_INFO, "BE-Matica", "Textured: %zu texture candidates", gCandidates.size());
 }
 
+std::atomic_bool gAutoCycle{false};
+
 bool candidateTexture(const char *bases[2], TextureVariant &out) {
   if (!gCollected) collect(bases);
   if (gCandidates.empty()) return false;
+  if (gAutoCycle) {  // debug: next candidate every 4 seconds, logged so screenshots can be matched
+    static auto last = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last > std::chrono::seconds(4)) {
+      last = now;
+      const int n = ++gCandidate;
+      const Candidate &c = gCandidates[static_cast<size_t>(n) % gCandidates.size()];
+      __android_log_print(ANDROID_LOG_INFO, "BE-Matica", "Textured: showing candidate %zu/%zu (%s+%#x -> +%#x)",
+                          static_cast<size_t>(n) % gCandidates.size() + 1, gCandidates.size(), c.base ? "player" : "renderer",
+                          c.field, c.variant);
+    }
+  }
   const Candidate &c = gCandidates[static_cast<size_t>(gCandidate.load()) % gCandidates.size()];
   const char *holder = nullptr;
   if (!safeRead(bases[c.base] + c.field, &holder, 8) || !holder || !safeRead(holder + c.variant, &out, sizeof(out)))
@@ -238,7 +255,9 @@ bool candidateTexture(const char *bases[2], TextureVariant &out) {
 }
 
 std::string nextTexture() {
-  const int n = ++gCandidate;
+  gAutoCycle = !gAutoCycle;  // the button now starts/stops automatic cycling
+  if (!gAutoCycle) return "Stopped on texture candidate " + std::to_string(gCandidate.load() % std::max<size_t>(1, gCandidates.size()) + 1);
+  const int n = gCandidate.load();
   if (gCandidates.empty()) return "No texture candidates yet (load a structure with real textures on)";
   const Candidate &c = gCandidates[static_cast<size_t>(n) % gCandidates.size()];
   const std::string text = "Texture candidate " + std::to_string(n % gCandidates.size() + 1) + "/" +

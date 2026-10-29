@@ -366,8 +366,8 @@ private:
                     .type = T::Toggle, .defaultValue = "false", .currentValue = texturedOn_ ? "true" : "false",
                     .hasCurrentValue = true});
       if (texturedOn_)
-        schema.node(N{.id = "texture_next", .key = "texture_next", .category = "main", .title = "Try next texture (debug)",
-                      .description = "Switches the ghost blocks to the next game texture until they show block textures.",
+        schema.node(N{.id = "texture_next", .key = "texture_next", .category = "main", .title = "Cycle textures (debug)",
+                      .description = "Starts or stops switching the ghost blocks to the next game texture every 4 seconds.",
                       .type = T::Button});
       if (easyPlaceOk_) {
         schema.node(N{.id = "easyplace", .key = "easyplace", .category = "easyplace", .title = "Easy Place",
