@@ -358,7 +358,8 @@ private:
         {"Control panel",
          "The floating panel is on screen while BE-Matica Controls is on. Drag its header (the dots) to move it; "
          "the arrow folds it away.\nThe header shows how much of the shown structure is built.\n"
-         "Move tab: X / Y / Z shift the hologram one block, Rotate +90\u00B0 turns it, Mirror flips it, "
+         "Move tab: the D-pad shifts the hologram one block along X and Z like a map (up = north), the \u25B2 / \u25BC "
+         "pair moves it up and down, Rotate +90\u00B0 turns it, Mirror flips it, "
          "< and > pick a single layer, All shows every layer.\nBlocks tab: every block the structure needs; tap a "
          "row to tick it off."},
         {"Lock and saved placement",

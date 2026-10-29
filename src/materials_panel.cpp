@@ -184,7 +184,7 @@ float textWidth(const std::string &s, float font) {
   return font * 0.55f * n;
 }
 
-enum class Icon { List, Move, Up, Down, Lock };
+enum class Icon { List, Move, Up, Down, Left, Right, Lock };
 
 // Icons from plain rectangles, centred in an s x s square at (x, y).
 void icon(std::vector<mm::DrawCommand> &cmds, Icon which, float x, float y, float s) {
@@ -218,6 +218,13 @@ void icon(std::vector<mm::DrawCommand> &cmds, Icon which, float x, float y, floa
     for (int k = 0; k < 4; ++k) {  // a stepped triangle, 4 rows
       const float rowY = which == Icon::Up ? cy - s * 0.12f + k * t : cy + s * 0.12f - (k + 1) * t;
       rect(cmds, cx - (k + 0.5f) * t, rowY, (2 * k + 1) * t, t, kText);
+    }
+    break;
+  case Icon::Left:
+  case Icon::Right:
+    for (int k = 0; k < 4; ++k) {  // the same triangle on its side
+      const float colX = which == Icon::Left ? cx - s * 0.12f + k * t : cx + s * 0.12f - (k + 1) * t;
+      rect(cmds, colX, cy - (k + 0.5f) * t, t, (2 * k + 1) * t, kText);
     }
     break;
   }
@@ -259,14 +266,22 @@ void MaterialsPanel::redrawLocked() {
       const float top = y_ + headerH_ + pad, half = (w_ - pad * 3) / 2;
       float yy = top;
       if (tab_ == Tab::Move) {
-        static constexpr const char *kGrid[][4] = {{"X -", "west", "X +", "east"},
-                                                  {"Y -", "down", "Y +", "up"},
-                                                  {"Z -", "north", "Z +", "south"}};
-        for (const auto &r : kGrid) {
-          button(x_ + pad, yy, half, ctrlH, r[0], r[1], "", false);
-          button(x_ + pad * 2 + half, yy, half, ctrlH, r[2], r[3], "", false);
-          yy += ctrlH + pad;
-        }
+        // D-pad moves along X and Z like a map (up = north, -Z); the column on the right moves along Y.
+        const float c = ctrlH, gap = pad * 0.5f, dx = x_ + (w_ - (c * 4 + gap * 2 + pad * 2)) / 2;
+        auto arrow = [&](float bx, float by, Icon which, const char *key) {
+          button(bx, by, c, c, "", key, "", false);
+          icon(cmds, which, bx, by, c);
+        };
+        arrow(dx + c + gap, yy, Icon::Up, "north");
+        arrow(dx, yy + c + gap, Icon::Left, "west");
+        arrow(dx + (c + gap) * 2, yy + c + gap, Icon::Right, "east");
+        arrow(dx + c + gap, yy + (c + gap) * 2, Icon::Down, "south");
+        text(cmds, dx + c + gap + (c - textWidth("X/Z", font)) / 2, yy + c + gap + (c - font) / 2, font, kDim, "X/Z");
+        const float yx = dx + (c + gap) * 3 + pad * 2;
+        arrow(yx, yy, Icon::Up, "up");
+        text(cmds, yx + (c - textWidth("Y", font)) / 2, yy + c + gap + (c - font) / 2, font, kDim, "Y");
+        arrow(yx, yy + (c + gap) * 2, Icon::Down, "down");
+        yy += (c + gap) * 3 + pad;
         button(x_ + pad, yy, half, ctrlH, "Rotate +90°", "rotate", "", false);
         button(x_ + pad * 2 + half, yy, half, ctrlH, "Mirror", "mirror", "", mirror_);
         yy += ctrlH + pad * 2;
