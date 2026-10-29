@@ -163,12 +163,33 @@ bool MaterialsPanel::onTouch(const pl::input::TouchEvent &e) {
 
 namespace {
 
-// Dark translucent panel with flat buttons; blue marks what is on or selected.
-constexpr uint32_t kPanel = 0xE6202327, kHeader = 0xF016181B, kButton = 0xFF353A40, kActive = 0xFF1C7ED6;
-constexpr uint32_t kWell = 0xFF15171A, kStripe = 0x10FFFFFF, kText = 0xFFF1F3F5, kDim = 0xFFA6ACB3, kDone = 0xFF7BD389;
+// LeviLauncher's mod menu look: charcoal surfaces, rounded cards with a thin grey border, and mint green for
+// whatever is on or selected (green text on a dark green fill).
+constexpr uint32_t kPanel = 0xFF18191C, kBorder = 0xFF343A40, kButton = 0xFF24282C, kActiveFill = 0xFF25463B;
+constexpr uint32_t kAccent = 0xFF4AE0A0, kWell = 0xFF151719, kStripe = 0x0AFFFFFF, kText = 0xFFE9ECEF, kDim = 0xFF8D949B;
 
 void rect(std::vector<mm::DrawCommand> &cmds, float x, float y, float w, float h, uint32_t color) {
   cmds.push_back({.type = mm::DrawCommandType::RectFilled, .x = x, .y = y, .w = w, .h = h, .color = color});
+}
+
+// The overlay has no rounded rectangle, so each corner is built from four slices of a quarter circle.
+void roundRect(std::vector<mm::DrawCommand> &cmds, float x, float y, float w, float h, float r, uint32_t color) {
+  r = std::min({r, w / 2, h / 2});
+  constexpr int kSlices = 4;
+  const float step = r / kSlices;
+  for (int i = 0; i < kSlices; ++i) {
+    const float dy = r - (i + 0.5f) * step, d = r - std::sqrt(std::max(0.0f, r * r - dy * dy));
+    rect(cmds, x + d, y + i * step, w - 2 * d, step, color);
+    rect(cmds, x + d, y + h - (i + 1) * step, w - 2 * d, step, color);
+  }
+  rect(cmds, x, y + r, w, h - 2 * r, color);
+}
+
+// A rounded card: a border-coloured shape with the fill inset by `e`.
+void card(std::vector<mm::DrawCommand> &cmds, float x, float y, float w, float h, float r, float e, uint32_t fill,
+          uint32_t border) {
+  roundRect(cmds, x, y, w, h, r, border);
+  roundRect(cmds, x + e, y + e, w - 2 * e, h - 2 * e, r - e, fill);
 }
 
 // `y` is the top of a line `size` tall; the launcher places text by its baseline, so it is moved down to it.
@@ -187,44 +208,45 @@ float textWidth(const std::string &s, float font) {
 enum class Icon { List, Move, Up, Down, Left, Right, Lock };
 
 // Icons from plain rectangles, centred in an s x s square at (x, y).
-void icon(std::vector<mm::DrawCommand> &cmds, Icon which, float x, float y, float s) {
+void icon(std::vector<mm::DrawCommand> &cmds, Icon which, float x, float y, float s, uint32_t color = kText,
+          uint32_t hole = kButton) {
   const float cx = x + s / 2, cy = y + s / 2, t = std::max(2.0f, std::round(s * 0.09f));
   switch (which) {
   case Icon::List:
-    for (int k = -1; k <= 1; ++k) rect(cmds, cx - s * 0.25f, cy + k * s * 0.2f - t / 2, s * 0.5f, t, kText);
+    for (int k = -1; k <= 1; ++k) rect(cmds, cx - s * 0.25f, cy + k * s * 0.2f - t / 2, s * 0.5f, t, color);
     break;
   case Icon::Move:
-    rect(cmds, cx - s * 0.3f, cy - t / 2, s * 0.6f, t, kText);
-    rect(cmds, cx - t / 2, cy - s * 0.3f, t, s * 0.6f, kText);
+    rect(cmds, cx - s * 0.3f, cy - t / 2, s * 0.6f, t, color);
+    rect(cmds, cx - t / 2, cy - s * 0.3f, t, s * 0.6f, color);
     for (int k = 1; k <= 2; ++k) {  // stepped arrowheads at the four tips
       const float a = s * 0.3f - k * t, b = t * (2 * k + 1);
-      rect(cmds, cx - b / 2, cy - a - t / 2, b, t, kText);
-      rect(cmds, cx - b / 2, cy + a - t / 2, b, t, kText);
-      rect(cmds, cx - a - t / 2, cy - b / 2, t, b, kText);
-      rect(cmds, cx + a - t / 2, cy - b / 2, t, b, kText);
+      rect(cmds, cx - b / 2, cy - a - t / 2, b, t, color);
+      rect(cmds, cx - b / 2, cy + a - t / 2, b, t, color);
+      rect(cmds, cx - a - t / 2, cy - b / 2, t, b, color);
+      rect(cmds, cx + a - t / 2, cy - b / 2, t, b, color);
     }
     break;
   case Icon::Lock: {  // shackle (three bars) over a body with a keyhole
     const float bw = s * 0.46f, bh = s * 0.3f, top = cy - s * 0.02f;
-    rect(cmds, cx - bw * 0.35f, top - s * 0.24f, t, s * 0.24f, kText);
-    rect(cmds, cx + bw * 0.35f - t, top - s * 0.24f, t, s * 0.24f, kText);
-    rect(cmds, cx - bw * 0.35f, top - s * 0.24f, bw * 0.7f, t, kText);
-    rect(cmds, cx - bw / 2, top, bw, bh, kText);
-    rect(cmds, cx - t / 2, top + bh * 0.3f, t, bh * 0.4f, kHeader);
+    rect(cmds, cx - bw * 0.35f, top - s * 0.24f, t, s * 0.24f, color);
+    rect(cmds, cx + bw * 0.35f - t, top - s * 0.24f, t, s * 0.24f, color);
+    rect(cmds, cx - bw * 0.35f, top - s * 0.24f, bw * 0.7f, t, color);
+    rect(cmds, cx - bw / 2, top, bw, bh, color);
+    rect(cmds, cx - t / 2, top + bh * 0.3f, t, bh * 0.4f, hole);
     break;
   }
   case Icon::Up:
   case Icon::Down:
     for (int k = 0; k < 4; ++k) {  // a stepped triangle, 4 rows
       const float rowY = which == Icon::Up ? cy - s * 0.12f + k * t : cy + s * 0.12f - (k + 1) * t;
-      rect(cmds, cx - (k + 0.5f) * t, rowY, (2 * k + 1) * t, t, kText);
+      rect(cmds, cx - (k + 0.5f) * t, rowY, (2 * k + 1) * t, t, color);
     }
     break;
   case Icon::Left:
   case Icon::Right:
     for (int k = 0; k < 4; ++k) {  // the same triangle on its side
       const float colX = which == Icon::Left ? cx - s * 0.12f + k * t : cx + s * 0.12f - (k + 1) * t;
-      rect(cmds, colX, cy - (k + 0.5f) * t, t, (2 * k + 1) * t, kText);
+      rect(cmds, colX, cy - (k + 0.5f) * t, t, (2 * k + 1) * t, color);
     }
     break;
   }
@@ -240,9 +262,10 @@ void MaterialsPanel::redrawLocked() {
   if (!toast_.empty()) {
     const float font = sh * 0.04f, w = textWidth(toast_, font) + font * 1.6f, h = font * 1.9f;
     const float x = (sw - w) / 2, y = sh * 0.18f;
-    rect(cmds, x, y, w, h, kPanel);
+    card(cmds, x, y, w, h, font * 0.6f, std::max(1.0f, std::round(font * 0.06f)), kPanel, kBorder);
     text(cmds, x + font * 0.8f, y + (h - font) / 2, font, kText, toast_);
   }
+  const size_t toastCount = cmds.size();
   if (visible_) {
     const float font = sh * 0.032f, pad = font * 0.5f, ctrlH = font * 2.3f;
     row_ = font * 1.55f;
@@ -252,11 +275,13 @@ void MaterialsPanel::redrawLocked() {
     px_ = std::clamp(px_, 0.0f, sw - w_);
     py_ = std::clamp(py_, 0.0f, sh - headerH_);
     x_ = px_, y_ = py_;
+    const float radius = font * 0.45f, edge = std::max(1.0f, std::round(font * 0.06f));
 
     auto button = [&](float bx, float by, float bw, float bh, const std::string &label, const char *key,
                       const char *value, bool active) {
-      rect(cmds, bx, by, bw, bh, active ? kActive : kButton);
-      if (!label.empty()) text(cmds, bx + (bw - textWidth(label, font)) / 2, by + (bh - font) / 2, font, kText, label);
+      card(cmds, bx, by, bw, bh, radius, edge, active ? kActiveFill : kButton, active ? kActiveFill : kBorder);
+      if (!label.empty())
+        text(cmds, bx + (bw - textWidth(label, font)) / 2, by + (bh - font) / 2, font, active ? kAccent : kText, label);
       controls_.push_back({bx, by, bw, bh, key, value});
     };
 
@@ -309,7 +334,7 @@ void MaterialsPanel::redrawLocked() {
         listTop_ = yy;
         listBottom_ = listTop_ + row_ * 6;
         const float wellX = x_ + pad, wellW = w_ - pad * 2;
-        rect(cmds, wellX, listTop_, wellW, listBottom_ - listTop_, kWell);
+        roundRect(cmds, wellX, listTop_, wellW, listBottom_ - listTop_, radius, kWell);
 
         const float contentH = row_ * materials_.size();
         const float maxScroll = std::max(0.0f, contentH - (listBottom_ - listTop_));
@@ -319,50 +344,49 @@ void MaterialsPanel::redrawLocked() {
           if (ry + row_ > listBottom_) break;
           const bool done = done_.count(materials_[k].name) > 0;
           if (k % 2) rect(cmds, wellX, ry, wellW, row_, kStripe);
-          const uint32_t color = done ? kDone : kText;
+          const uint32_t color = done ? kAccent : kText;
           text(cmds, wellX + font * 0.5f, ry + (row_ - font) / 2, font, color,
                (done ? "\xE2\x9C\x93 " : "") + materials_[k].name);
-          text(cmds, x_ + w_ * 0.62f, ry + (row_ - font) / 2, font, done ? kDone : kDim,
+          text(cmds, x_ + w_ * 0.62f, ry + (row_ - font) / 2, font, done ? kAccent : kDim,
                countText(materials_[k].count));
         }
         if (maxScroll > 0) {
           const float trackH = listBottom_ - listTop_, barH = std::max(row_, trackH * trackH / contentH);
-          rect(cmds, wellX + wellW - font * 0.4f, listTop_ + (trackH - barH) * (scroll_ / maxScroll), font * 0.3f,
-               barH, kDim);
+          roundRect(cmds, wellX + wellW - font * 0.45f, listTop_ + (trackH - barH) * (scroll_ / maxScroll), font * 0.3f,
+                    barH, font * 0.15f, kBorder);
         }
         yy = listBottom_ + pad;
       }
       bodyH = yy - (y_ + headerH_);
     }
     h_ = headerH_ + bodyH;
-    // The background's height is only known now, so it goes in under the body (after the toast's 2 commands).
-    cmds.insert(cmds.begin() + (toast_.empty() ? 0 : 2),
-                mm::DrawCommand{.type = mm::DrawCommandType::RectFilled, .x = x_, .y = y_, .w = w_, .h = h_,
-                                .color = kPanel});
+    // The background's height is only known now, so it goes in under the body, after the toast.
+    std::vector<mm::DrawCommand> bg;
+    card(bg, x_, y_, w_, h_, font * 0.8f, edge, kPanel, kBorder);
+    cmds.insert(cmds.begin() + static_cast<std::ptrdiff_t>(toastCount), bg.begin(), bg.end());
 
-    // Header: progress, then Blocks / Move tabs and collapse at the right.
-    rect(cmds, x_, y_, w_, headerH_, kHeader);
+    // Header: progress, then lock, Blocks / Move tabs and collapse at the right, over a divider.
+    if (!collapsed_) rect(cmds, x_ + edge, y_ + headerH_, w_ - 2 * edge, edge, kBorder);
     const std::string progress =
         total_ == 0 ? "--" : std::to_string(static_cast<int>(built_ * 100 / total_)) + "% built";
     const float dot = std::max(2.0f, std::round(font * 0.14f));  // 2x3 grip dots: the header drags the panel
     for (int c = 0; c < 2; ++c)
       for (int r = -1; r <= 1; ++r)
         rect(cmds, x_ + pad * 1.5f + c * dot * 2.5f, y_ + headerH_ / 2 + r * dot * 2.5f - dot / 2, dot, dot, kDim);
-    text(cmds, x_ + pad * 2.5f + dot * 4, y_ + (headerH_ - font) / 2, font, total_ && built_ == total_ ? kDone : kText,
-         progress);
+    text(cmds, x_ + pad * 2.5f + dot * 4, y_ + (headerH_ - font) / 2, font, total_ ? kAccent : kDim, progress);
     const float s = headerH_ - pad * 2;
     float bx = x_ + w_ - pad - s;
     button(bx, y_ + pad, s, s, "", "_collapse", "", false);
-    icon(cmds, collapsed_ ? Icon::Down : Icon::Up, bx, y_ + pad, s);
+    icon(cmds, collapsed_ ? Icon::Down : Icon::Up, bx, y_ + pad, s, kDim);
     bx -= s + pad;
     button(bx, y_ + pad, s, s, "", "_tab", "move", !collapsed_ && tab_ == Tab::Move);
-    icon(cmds, Icon::Move, bx, y_ + pad, s);
+    icon(cmds, Icon::Move, bx, y_ + pad, s, !collapsed_ && tab_ == Tab::Move ? kAccent : kDim);
     bx -= s + pad;
     button(bx, y_ + pad, s, s, "", "_tab", "blocks", !collapsed_ && tab_ == Tab::Blocks);
-    icon(cmds, Icon::List, bx, y_ + pad, s);
+    icon(cmds, Icon::List, bx, y_ + pad, s, !collapsed_ && tab_ == Tab::Blocks ? kAccent : kDim);
     bx -= s + pad;
     button(bx, y_ + pad, s, s, "", "lock", locked_ ? "0" : "1", locked_);
-    icon(cmds, Icon::Lock, bx, y_ + pad, s);
+    icon(cmds, Icon::Lock, bx, y_ + pad, s, locked_ ? kAccent : kDim, locked_ ? kActiveFill : kButton);
   }
   mm::submitDrawCommands(moduleId_, cmds);
 }
