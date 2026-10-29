@@ -50,6 +50,7 @@ View gView;
 Vec3f gCamera{};
 bool gHaveCamera = false;
 std::atomic_bool gPlaceAtPlayer{false};
+pl::log::Logger *gLog = nullptr;
 std::atomic_bool gVisible{true};
 std::atomic<float> gAlpha{0.45f};
 std::atomic_bool gOutlines{true}, gFill{true};
@@ -203,16 +204,29 @@ void refreshPlaced(const char *levelRenderer, const Structure &s) {
     placed = gPlaced, origin = gOrigin, view = gView;
   }
   if (!full && pending.empty()) return;  // nothing placed since the last check: no world reads at all
+  // The class is a BlockSource subclass, so match the name's ending; the renderer player is searched too.
+  static const char *sourceOwner = nullptr;
   static int sourceField = -2;
   if (sourceField == -2) {
     sourceField = -1;
-    for (unsigned off = 0; off < 0x1000 && sourceField < 0; off += 8) {
-      const void *p = nullptr;
-      if (safeRead(levelRenderer + off, &p, 8) && p && className(p) == "BlockSource") sourceField = static_cast<int>(off);
+    const char *player = nullptr;
+    safeRead(levelRenderer + off::LevelRenderer_levelRendererPlayer, &player, 8);
+    for (const char *owner : {levelRenderer, player}) {
+      for (unsigned off = 0; owner && off < 0x1000 && sourceField < 0; off += 8) {
+        const void *p = nullptr;
+        if (!safeRead(owner + off, &p, 8) || !p) continue;
+        const std::string name = className(p);
+        if (name.size() >= 11 && name.compare(name.size() - 11, 11, "BlockSource") == 0) {
+          sourceField = static_cast<int>(off), sourceOwner = owner;
+          if (gLog) gLog->info("Hologram: block source {} at {} + {:#x}", name, owner == levelRenderer ? "level renderer" : "renderer player", off);
+        }
+      }
+      if (sourceField >= 0) break;
     }
+    if (sourceField < 0 && gLog) gLog->warn("Hologram: no block source found, built blocks can't be hidden");
   }
   void *source = nullptr;
-  if (sourceField < 0 || !safeRead(levelRenderer + sourceField, &source, 8) || !source) return;
+  if (sourceField < 0 || !safeRead(sourceOwner + sourceField, &source, 8) || !source) return;
   static std::unordered_map<std::string, uintptr_t> types;  // render thread only
   auto typeOf = [&](const std::string &name) {
     auto it = types.find(name);
@@ -226,8 +240,12 @@ void refreshPlaced(const char *levelRenderer, const Structure &s) {
     const BlockPos pos{x, y, z};
     const void *block = gGetBlock(source, pos);
     const void *type = nullptr;
-    return block && safeRead(static_cast<const char *>(block) + off::Block_blockType, &type, 8) && type &&
-           (reinterpret_cast<uintptr_t>(type) & 0x00FFFFFFFFFFFFFFULL) == typeOf(s.palette[palette].name);
+    const bool ok = block && safeRead(static_cast<const char *>(block) + off::Block_blockType, &type, 8) && type &&
+                    (reinterpret_cast<uintptr_t>(type) & 0x00FFFFFFFFFFFFFFULL) == typeOf(s.palette[palette].name);
+    if (!ok && !full && gLog)  // placements are rare, so each miss is logged to compare the two types
+      gLog->info("Hologram: {} {} {} wants {} ({:#x}), world block {} type {}", x, y, z, s.palette[palette].name,
+                 typeOf(s.palette[palette].name), block, type);
+    return ok;
   };
   bool changed = false;
   if (full) {  // once after showing or moving: every cell, since the mesh only holds the visible shell
@@ -246,6 +264,8 @@ void refreshPlaced(const char *levelRenderer, const Structure &s) {
     const int32_t want = expectedAt(s, origin, view, {x, y, z});
     if (want >= 0 && matches(x, y, z, want) && placed.insert(key).second) changed = true;
   }
+  if (gLog)
+    gLog->info("Hologram: {} check, {} placed, {} built cells", full ? "full" : "placement", pending.size(), placed.size());
   if (!changed) return;
   std::lock_guard lock(gMu);
   if (gFullCheck) return;  // moved while checking: these positions are stale, the next frame redoes it
@@ -414,6 +434,7 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
 
 namespace {
 bool install(pl::log::Logger &log, std::string &error) {
+  gLog = &log;
   struct Want {
     const char *name, *sig;
     void **out;
