@@ -2,7 +2,6 @@
 
 #include <pl/ModMenu.hpp>
 
-#include <android/log.h>
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -14,20 +13,6 @@ namespace mm = pl::modmenu;
 
 namespace {
 
-constexpr const char *kButtonId = "bematica.blocks";
-// BE-Matica's own pixel-art chest, drawn on a 16x16 grid.
-constexpr const char *kChestIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges">
-<rect x="1" y="2" width="14" height="13" fill="#2b1a0e"/>
-<rect x="2" y="3" width="12" height="4" fill="#a8743a"/>
-<rect x="2" y="3" width="12" height="1" fill="#c99350"/>
-<rect x="2" y="7" width="12" height="1" fill="#2b1a0e"/>
-<rect x="2" y="8" width="12" height="6" fill="#8a5a2b"/>
-<rect x="2" y="13" width="12" height="1" fill="#5e3a1a"/>
-<rect x="2" y="8" width="1" height="6" fill="#a8743a"/>
-<rect x="6" y="5" width="4" height="5" fill="#2b1a0e"/>
-<rect x="7" y="6" width="2" height="3" fill="#f2c14e"/>
-<rect x="7" y="8" width="2" height="1" fill="#c8962c"/>
-</svg>)";
 // Android MotionEvent actions.
 constexpr int kDown = 0, kUp = 1, kMove = 2, kCancel = 3, kPointerDown = 5, kPointerUp = 6;
 
@@ -53,9 +38,7 @@ void MaterialsPanel::init(std::string moduleId, std::string modId,
 
 void MaterialsPanel::shutdown() {
   std::lock_guard lock(mu_);
-  if (buttonRegistered_) mm::unregisterButton(kButtonId);
-  buttonRegistered_ = false;
-  visible_ = open_ = false;
+  visible_ = false;
   redrawLocked();
 }
 
@@ -71,24 +54,6 @@ void MaterialsPanel::setContent(std::string title, std::vector<Material> materia
 void MaterialsPanel::setVisible(bool visible) {
   std::lock_guard lock(mu_);
   visible_ = visible;
-  if (visible && !buttonRegistered_) {
-    buttonRegistered_ = mm::ButtonBuilder(kButtonId, "BE-Matica controls")
-                            .moduleId(moduleId_)
-                            .modId(modId_)
-                            .label("Controls")
-                            .svgIcon(kChestIcon)
-                            .sizeScale(1.0f, 1.0f)
-                            .onEvent([this](std::string_view, mm::ButtonEvent e, float) {
-                              if (e == mm::ButtonEvent::Click) toggleOpen();
-                            })
-                            .registerButton();
-    // A rejected button fails silently in the launcher; this shows it in logcat.
-    if (!buttonRegistered_) __android_log_print(ANDROID_LOG_WARN, "BE-Matica", "Controls button was not registered");
-  } else if (!visible && buttonRegistered_) {
-    mm::unregisterButton(kButtonId);
-    buttonRegistered_ = false;
-  }
-  if (!visible) open_ = false;
   redrawLocked();
 }
 
@@ -131,14 +96,8 @@ void MaterialsPanel::setProgress(size_t built, size_t total) {
   redrawLocked();
 }
 
-void MaterialsPanel::toggleOpen() {
-  std::lock_guard lock(mu_);
-  open_ = !open_;
-  redrawLocked();
-}
-
 bool MaterialsPanel::insideLocked(float x, float y) const {
-  return visible_ && open_ && x >= x_ && x <= x_ + w_ && y >= y_ && y <= y_ + h_;
+  return visible_ && x >= x_ && x <= x_ + w_ && y >= y_ && y <= y_ + h_;
 }
 
 bool MaterialsPanel::onTouch(const pl::input::TouchEvent &e) {
@@ -212,8 +171,10 @@ void rect(std::vector<mm::DrawCommand> &cmds, float x, float y, float w, float h
   cmds.push_back({.type = mm::DrawCommandType::RectFilled, .x = x, .y = y, .w = w, .h = h, .color = color});
 }
 
+// `y` is the top of a line `size` tall; the launcher places text by its baseline, so it is moved down to it.
 void text(std::vector<mm::DrawCommand> &cmds, float x, float y, float size, uint32_t color, std::string s) {
-  cmds.push_back({.type = mm::DrawCommandType::Text, .x = x, .y = y, .color = color, .size = size, .text = std::move(s)});
+  cmds.push_back({.type = mm::DrawCommandType::Text, .x = x, .y = y + size * 0.85f, .color = color, .size = size,
+                  .text = std::move(s)});
 }
 
 // Rough width of a label; multi-byte UTF-8 characters count once.
@@ -266,12 +227,12 @@ void MaterialsPanel::redrawLocked() {
     rect(cmds, x, y, w, h, kPanel);
     text(cmds, x + font * 0.8f, y + (h - font) / 2, font, kText, toast_);
   }
-  if (visible_ && open_) {
-    const float font = sh * 0.032f, pad = font * 0.4f, ctrlH = font * 2.1f;
+  if (visible_) {
+    const float font = sh * 0.032f, pad = font * 0.5f, ctrlH = font * 2.3f;
     row_ = font * 1.55f;
     headerH_ = font * 2.4f;
     w_ = font * 15;
-    if (px_ < 0) px_ = sw * 0.06f, py_ = sh * 0.1f;
+    if (px_ < 0) px_ = sw * 0.21f, py_ = sh * 0.12f;  // right of the launcher's own buttons at the top left
     px_ = std::clamp(px_, 0.0f, sw - w_);
     py_ = std::clamp(py_, 0.0f, sh - headerH_);
     x_ = px_, y_ = py_;
@@ -359,7 +320,12 @@ void MaterialsPanel::redrawLocked() {
     rect(cmds, x_, y_, w_, headerH_, kHeader);
     const std::string progress =
         total_ == 0 ? "--" : std::to_string(static_cast<int>(built_ * 100 / total_)) + "% built";
-    text(cmds, x_ + pad * 2, y_ + (headerH_ - font) / 2, font, total_ && built_ == total_ ? kDone : kText, progress);
+    const float dot = std::max(2.0f, std::round(font * 0.14f));  // 2x3 grip dots: the header drags the panel
+    for (int c = 0; c < 2; ++c)
+      for (int r = -1; r <= 1; ++r)
+        rect(cmds, x_ + pad * 1.5f + c * dot * 2.5f, y_ + headerH_ / 2 + r * dot * 2.5f - dot / 2, dot, dot, kDim);
+    text(cmds, x_ + pad * 2.5f + dot * 4, y_ + (headerH_ - font) / 2, font, total_ && built_ == total_ ? kDone : kText,
+         progress);
     const float s = headerH_ - pad * 2;
     float bx = x_ + w_ - pad - s;
     button(bx, y_ + pad, s, s, "", "_collapse", "", false);

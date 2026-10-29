@@ -277,6 +277,12 @@ bool context(void *gm, Context &ctx) {
   return true;
 }
 
+// Water and lava come from buckets, which aren't block items: Easy Place leaves those spots to the game.
+bool wantsLiquid(const Context &ctx, const Cell &target) {
+  const std::string &want = ctx.h.structure->palette[expectedAt(*ctx.h.structure, ctx.h.origin, ctx.h.view, target)].name;
+  return want.find("water") != std::string::npos || want.find("lava") != std::string::npos;
+}
+
 // The held block must be the one the structure wants at `target`.
 bool holdingRight(const Context &ctx, const Cell &target, uint8_t hand) {
   const std::string &want = ctx.h.structure->palette[expectedAt(*ctx.h.structure, ctx.h.origin, ctx.h.view, target)].name;
@@ -343,6 +349,10 @@ bool buildBlockInner(void *gm, const BlockPos *pos, uint8_t face, uint8_t hand, 
     }
     target = normal;  // aimed straight at a ghost block's spot
   }
+  if (wantsLiquid(ctx, target)) {
+    trace("EasyPlace build: liquid wanted at {} {} {}, vanilla placement", target[0], target[1], target[2]);
+    return orig(gm, pos, face, hand, flag);
+  }
   // Only the fallback (the spot next to the clicked face) can be filled here, e.g. by grass the game will
   // replace; the game decides whether it can place there.
   if (!holdingRight(ctx, target, hand)) {
@@ -377,6 +387,11 @@ bool useItemDetour(void *gm, void *stack, uint32_t flag) {
     return orig(gm, stack, flag);
   }
   if (!ctx.world.isAir(target)) return orig(gm, stack, flag);
+  if (wantsLiquid(ctx, target)) {  // the bucket pours where the game aims it; then the ghost is rechecked
+    const bool used = orig(gm, stack, flag);
+    if (used) hologram::checkPlaced(target[0], target[1], target[2]);
+    return used;
+  }
   if (!holdingRight(ctx, target, 0)) {
     trace("EasyPlace air: wrong block in hand for {} {} {}", target[0], target[1], target[2]);
     return false;

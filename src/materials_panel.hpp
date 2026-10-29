@@ -12,8 +12,8 @@
 
 namespace bematica {
 
-// Floating control panel opened by the chest HUD button. The header shows build progress, switches
-// between the Move and Blocks tabs, collapses the panel and drags it around. Move holds the nudge,
+// Floating control panel, on screen while the Controls module is on. The header shows build progress,
+// switches between the Move and Blocks tabs, collapses the panel and drags it around. Move holds the nudge,
 // rotate, mirror and layer controls plus the hologram / Easy Place toggles; Blocks holds the material
 // list, which scrolls by dragging, and tapping a row ticks it off.
 class MaterialsPanel {
@@ -25,7 +25,7 @@ public:
   void shutdown();
 
   void setContent(std::string title, std::vector<Material> materials);
-  void setVisible(bool visible);  // whether the button is offered at all
+  void setVisible(bool visible);  // whether the panel is on screen at all
   void toast(std::string text);   // short message near the top of the screen
   // `layer` counts from 0; `single` is false while every layer is shown.
   void setLayer(int layer, int layerCount, bool single);
@@ -34,7 +34,6 @@ public:
 
 private:
   bool onTouch(const pl::input::TouchEvent &e);
-  void toggleOpen();
   void redrawLocked();
   bool insideLocked(float x, float y) const;
 
@@ -56,7 +55,7 @@ private:
   std::string title_;
   std::vector<Material> materials_;
   std::set<std::string> done_;
-  bool visible_ = false, open_ = false, buttonRegistered_ = false;
+  bool visible_ = false;
 
   // Layout, recomputed on every redraw from the HUD surface size. px_/py_ is where the panel was dragged
   // to (negative until the first redraw places it).

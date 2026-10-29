@@ -25,7 +25,7 @@ namespace fs = std::filesystem;
 namespace mm = pl::modmenu;
 
 constexpr const char *kModule = "bematica.main";
-// Its own module so the launcher shows and hides the chest button when it is switched on and off.
+// Its own module so the control panel can be switched on and off in the launcher.
 constexpr const char *kControlsModule = "bematica.controls";
 
 // The launcher app can always read its own folder on shared storage; Download needs "All files access".
@@ -75,7 +75,7 @@ public:
                   .registerModule();
     if (!ok) ctx.logger().warn("BE-Matica: menu registration failed");
     ok = mm::ModuleBuilder(kControlsModule, "BE-Matica Controls")
-             .description("Chest button: layer and move controls, and the block list.")
+             .description("Floating control panel: move, rotate, layer controls and the block list.")
              .modId(ctx.id())
              .defaultEnabled(true)
              .hideInHudEditor(false)
@@ -100,8 +100,6 @@ public:
     easyplace::setEnabled(easyPlaceOn_);
     easyplace::setAirPlace(airPlaceOn_);
     {
-      // The launcher only collects mod buttons while it sets up its overlays (game start) or when the module is
-      // switched on, so the chest button is registered now rather than once a structure is loaded.
       std::lock_guard lock(mu_);
       syncPanelLocked();
     }
