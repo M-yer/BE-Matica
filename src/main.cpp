@@ -89,7 +89,11 @@ public:
              .registerModule();
     if (!ok) ctx.logger().warn("BE-Matica: controls module registration failed");
     panel_.init(kControlsModule, ctx.id(), [this](std::string_view key, std::string_view value) { onSetting(key, value); });
-    hologram::setProgressListener([this](size_t built, size_t total) { panel_.setProgress(built, total); });
+    hologram::setProgressListener([this](size_t built, size_t total) {
+      panel_.setProgress(built, total);
+      std::lock_guard lock(mu_);
+      autoLockLocked(built, total);
+    });
     const auto surface = mm::getHudSurfaceSize();
     ctx.logger().info("BE-Matica: HUD surface {}x{}", surface.width, surface.height);
 
@@ -104,11 +108,14 @@ public:
       std::lock_guard lock(mu_);
       origin_ = origin, haveOrigin_ = true;
       saveSettingsLocked();
+      // Keeps the Location fields current, except right after one was typed (that would reset the field).
+      if (!originTyped_) publishLocked();
+      originTyped_ = false;
     });
     {
       // The structure comes back where it was left, with the same rotation, mirror and layer view.
       std::lock_guard lock(mu_);
-      if (!savedName_.empty() && haveOrigin_) {
+      if (rememberOn_ && !savedName_.empty() && haveOrigin_) {
         const auto origin = origin_;
         loadLocked(savedName_, &savedView_, &origin);
       }
@@ -207,8 +214,26 @@ private:
     } else if (key == "lock") {
       locked_ = value == "true" || value == "1";
       saveSettingsLocked();
-      syncLayerLocked();
       panel_.toast(locked_ ? "Placement locked" : "Placement unlocked");
+    } else if (key == "autolock" || key == "remember") {
+      (key == "autolock" ? autoLockOn_ : rememberOn_) = value == "true" || value == "1";
+      saveSettingsLocked();
+    } else if (key == "autolock_pct") {
+      autoLockPct_ = std::clamp(std::atoi(std::string(value).c_str()), 1, 100);
+      saveSettingsLocked();
+      return;  // no page change needed while the slider is dragged
+    } else if (key == "origin_x" || key == "origin_y" || key == "origin_z") {
+      // Typed coordinates apply once they are a whole number; half-typed text ("-") is ignored.
+      const std::string text(value);
+      char *end = nullptr;
+      const long v = std::strtol(text.c_str(), &end, 10);
+      if (text.empty() || *end || locked_) {
+        if (locked_) panel_.toast("Placement is locked");
+        return;
+      }
+      origin_[key.back() - 'x'] = static_cast<int>(v);
+      originTyped_ = true;
+      hologram::setOrigin(origin_);
       return;
     } else if (key == "move") {
       if (locked_) return panel_.toast("Placement is locked");
@@ -276,6 +301,50 @@ private:
     saveSettingsLocked();
     syncLayerLocked();
     return true;
+  }
+
+  // Locks placement once the build passes the auto-lock percentage. Only on the way up past it, so a structure
+  // that comes back already past it, or one unlocked by hand, stays as the user left it.
+  void autoLockLocked(size_t built, size_t total) {
+    if (total == 0) return;
+    const int pct = static_cast<int>(built * 100 / total), last = lastPct_;
+    lastPct_ = pct;
+    if (!autoLockOn_ || locked_ || last < 0 || last >= autoLockPct_ || pct < autoLockPct_) return;
+    locked_ = true;
+    saveSettingsLocked();
+    panel_.toast("Placement locked at " + std::to_string(pct) + "% built");
+    publishLocked();
+  }
+
+  void addSettingsNodesLocked(mm::ConfigSchemaBuilder &schema) {
+    using N = mm::ConfigNodeV2;
+    using T = mm::ConfigControlTypeV2;
+    auto flag = [](bool on) { return on ? "true" : "false"; };
+    schema.node(N{.id = "lock", .key = "lock", .category = "settings", .title = "Lock placement",
+                  .description = "Stops moving, rotating and mirroring the structure. Also the padlock on the panel.",
+                  .section = "Placement", .type = T::Toggle, .defaultValue = "false", .currentValue = flag(locked_),
+                  .hasCurrentValue = true});
+    schema.node(N{.id = "autolock", .key = "autolock", .category = "settings", .title = "Auto-lock",
+                  .description = "Lock the placement by itself once this much of the structure is built.",
+                  .section = "Placement", .type = T::Toggle, .defaultValue = "true",
+                  .currentValue = flag(autoLockOn_), .hasCurrentValue = true});
+    schema.node(N{.id = "autolock_pct", .key = "autolock_pct", .category = "settings", .title = "Auto-lock at",
+                  .section = "Placement", .type = T::SliderInt, .defaultValue = "10",
+                  .currentValue = std::to_string(autoLockPct_), .hasCurrentValue = true, .minValue = "1",
+                  .maxValue = "100", .step = "1", .unit = "%",
+                  .visibleWhen = {{.key = "autolock", .op = mm::ConfigConditionOpV2::Truthy}}});
+    schema.node(N{.id = "remember", .key = "remember", .category = "settings", .title = "Remember placement",
+                  .description = "Bring the structure back where it was when the game restarts or you rejoin.",
+                  .section = "Placement", .type = T::Toggle, .defaultValue = "true",
+                  .currentValue = flag(rememberOn_), .hasCurrentValue = true});
+    if (loadedName_.empty()) return;
+    static constexpr const char *kAxes[][2] = {{"origin_x", "X"}, {"origin_y", "Y"}, {"origin_z", "Z"}};
+    for (int k = 0; k < 3; ++k)
+      schema.node(N{.id = kAxes[k][0], .key = kAxes[k][0], .category = "settings", .title = kAxes[k][1],
+                    .description = k == 0 ? "World position of the structure's corner. Type a number to move it there."
+                                          : "",
+                    .section = "Location", .type = T::Text, .currentValue = std::to_string(origin_[k]),
+                    .hasCurrentValue = true, .placeholder = "0", .maxLength = 9, .disabled = locked_});
   }
 
   // The Help tab: one Info row per topic (the launcher caps a description at 1024 characters).
@@ -408,6 +477,7 @@ private:
     status_ = "Loaded " + name;
     panel_.setContent(name.substr(0, name.rfind('.')), materials_);
     view_ = view ? *view : View{};
+    lastPct_ = -1;
     hologram::setView(view_);
     const bool keep = origin || (locked_ && haveOrigin_);
     hologram::show(std::make_shared<const Structure>(loaded_), !keep);
@@ -429,6 +499,7 @@ private:
       if (hologramOk_) schema.category("place", "Placement & Layers");
       schema.category("materials", "Materials");
     }
+    schema.category("settings", "Settings");
     schema.category("help", "Help");
 
     schema.node(N{.id = "import", .key = "import", .category = "main", .title = "Import structure",
@@ -505,6 +576,7 @@ private:
                       .type = T::Info});
     }
 
+    addSettingsNodesLocked(schema);
     addHelpNodes(schema);
 
     publishing_ = true;
@@ -563,6 +635,9 @@ private:
       else if (key == "layers") savedView_.layers = static_cast<View::Layers>(std::clamp(std::atoi(value.c_str()), 0, 2));
       else if (key == "layer") savedView_.layer = std::max(0, std::atoi(value.c_str()));
       else if (key == "locked") locked_ = value == "1";
+      else if (key == "autolock") autoLockOn_ = value == "1";
+      else if (key == "autolock_pct") autoLockPct_ = std::clamp(std::atoi(value.c_str()), 1, 100);
+      else if (key == "remember") rememberOn_ = value == "1";
     }
   }
 
@@ -572,7 +647,8 @@ private:
                                   << "structure=" << loadedName_ << "\norigin=" << origin_[0] << ',' << origin_[1] << ','
                                   << origin_[2] << "\nrotation=" << view_.rotation << "\nmirror=" << view_.mirror
                                   << "\nlayers=" << static_cast<int>(view_.layers) << "\nlayer=" << view_.layer
-                                  << "\nlocked=" << locked_ << "\n";
+                                  << "\nlocked=" << locked_ << "\nautolock=" << autoLockOn_
+                                  << "\nautolock_pct=" << autoLockPct_ << "\nremember=" << rememberOn_ << "\n";
   }
 
   void syncPanelLocked() { panel_.setVisible(controls_); }
@@ -586,6 +662,10 @@ private:
   // Placement kept across launches: the structure's world origin, and the name/view read at start-up.
   std::array<int, 3> origin_{};
   bool haveOrigin_ = false, locked_ = false;
+  bool autoLockOn_ = true, rememberOn_ = true;
+  int autoLockPct_ = 10;
+  int lastPct_ = -1;
+  bool originTyped_ = false;  // build progress at the last report, -1 until the structure's first check
   std::string savedName_;
   View savedView_;
   fs::path structuresDir_;
