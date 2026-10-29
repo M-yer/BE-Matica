@@ -189,14 +189,18 @@ bool aimRay(const char *levelRenderer, Vec3f &eye, Vec3f &dir) {
 
 // Ghost blocks the world already has right (same block type) are dropped from the hologram; checked twice a second
 // on the render thread through the level renderer's BlockSource, found by its class name.
-void refreshPlaced(const char *levelRenderer, const Structure &s, const HologramMesh &mesh) {
+void refreshPlaced(const char *levelRenderer, const Structure &s) {
   std::vector<uint64_t> pending;
   bool full;
+  std::unordered_set<uint64_t> placed;
+  std::array<int, 3> origin;
+  View view;
   {
     std::lock_guard lock(gMu);
     full = gFullCheck;
     gFullCheck = false;
     pending.swap(gPending);
+    placed = gPlaced, origin = gOrigin, view = gView;
   }
   if (!full && pending.empty()) return;  // nothing placed since the last check: no world reads at all
   static int sourceField = -2;
@@ -225,21 +229,16 @@ void refreshPlaced(const char *levelRenderer, const Structure &s, const Hologram
     return block && safeRead(static_cast<const char *>(block) + off::Block_blockType, &type, 8) && type &&
            (reinterpret_cast<uintptr_t>(type) & 0x00FFFFFFFFFFFFFFULL) == typeOf(s.palette[palette].name);
   };
-  std::unordered_set<uint64_t> placed;
-  {
-    std::lock_guard lock(gMu);
-    placed = gPlaced;
-  }
-  std::array<int, 3> origin;
-  View view;
-  {
-    std::lock_guard lock(gMu);
-    origin = gOrigin, view = gView;
-  }
   bool changed = false;
-  if (full) {  // once after showing or moving: what is already built
-    for (const auto &b : mesh.blocks)
-      if (matches(b.x, b.y, b.z, b.palette) && placed.insert(packWorld(b.x, b.y, b.z)).second) changed = true;
+  if (full) {  // once after showing or moving: every cell, since the mesh only holds the visible shell
+    const auto size = viewSize(s, view);
+    for (int x = 0; x < size[0]; ++x)
+      for (int y = 0; y < size[1]; ++y)
+        for (int z = 0; z < size[2]; ++z) {
+          const int wx = origin[0] + x, wy = origin[1] + y, wz = origin[2] + z;
+          const int32_t want = expectedAt(s, origin, view, {wx, wy, wz});
+          if (want >= 0 && matches(wx, wy, wz, want) && placed.insert(packWorld(wx, wy, wz)).second) changed = true;
+        }
   }
   auto sx = [](uint64_t v) { return static_cast<int>(v & 0x100000 ? static_cast<int64_t>(v) - 0x200000 : static_cast<int64_t>(v)); };
   for (uint64_t key : pending) {  // just placed
@@ -249,6 +248,7 @@ void refreshPlaced(const char *levelRenderer, const Structure &s, const Hologram
   }
   if (!changed) return;
   std::lock_guard lock(gMu);
+  if (gFullCheck) return;  // moved while checking: these positions are stale, the next frame redoes it
   gPlaced = std::move(placed);
   rebuildLocked();
 }
@@ -390,7 +390,7 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
       std::lock_guard lock(gMu);
       structure = gStructure;
     }
-    if (structure) refreshPlaced(static_cast<const char *>(self), *structure, *mesh);
+    if (structure) refreshPlaced(static_cast<const char *>(self), *structure);
   }
   if (haveFace) {
     std::shared_ptr<const Structure> structure;
