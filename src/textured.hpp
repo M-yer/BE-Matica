@@ -18,9 +18,9 @@ void uninstall();
 void setEnabled(bool on);
 bool enabled();
 
-// Draws `blocks` relative to the camera. `lrp` is the level renderer's player, which holds the block texture.
+// Draws `blocks` relative to the camera. `levelRenderer` holds the block texture.
 // Returns false when it could not draw (pieces missing, texture not found), so the caller can fall back to boxes.
-bool draw(void *screenContext, void *tess, const char *lrp, const std::vector<BlockCell> &blocks, const Structure &s,
+bool draw(void *screenContext, void *tess, const char *levelRenderer, const std::vector<BlockCell> &blocks, const Structure &s,
           const Vec3f &cam);
 
 }  // namespace bematica::textured
