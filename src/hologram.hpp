@@ -23,6 +23,9 @@ void uninstall();
 // Shows `s` in the world. If `atPlayer` is set, it is placed at the player's feet on the next frame.
 void show(std::shared_ptr<const Structure> s, bool atPlayer);
 void moveToPlayer();
+void setOrigin(std::array<int, 3> origin);  // world position of the structure's minimum corner
+// Called on the render thread whenever the structure's origin changes (moves, or placed at the player).
+void setOriginListener(std::function<void(std::array<int, 3> origin)> listener);
 void nudge(int dx, int dy, int dz);
 void setView(const View &view);
 void setVisible(bool visible);

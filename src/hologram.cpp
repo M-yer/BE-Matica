@@ -59,6 +59,9 @@ std::vector<uint64_t> gPending;        // positions placed since the last check 
 bool gFullCheck = true;                 // check every shown block once (guarded by gMu)
 size_t gTotal = 0;                      // shown structure blocks, counted by the full check (guarded by gMu)
 std::function<void(size_t, size_t)> gProgress;  // guarded by gMu
+std::function<void(std::array<int, 3>)> gOriginListener;  // guarded by gMu
+std::array<int, 3> gReportedOrigin{};                     // last origin given to it (guarded by gMu)
+bool gOriginReported = false;                             // guarded by gMu
 GetBlockFn gGetBlock = nullptr;
 BlockRegistryFn gRegistry = nullptr;
 BlockLookupFn gLookup = nullptr;
@@ -365,6 +368,7 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
   if (!finite(cam)) return;
 
   std::shared_ptr<const HologramMesh> mesh;
+  std::function<void(std::array<int, 3>)> originListener;
   {
     std::lock_guard lock(gMu);
     gCamera = cam;
@@ -378,7 +382,12 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
       rebuildLocked();
     }
     mesh = gMesh;
+    if (gStructure && gOriginListener && (!gOriginReported || gOrigin != gReportedOrigin)) {
+      gReportedOrigin = gOrigin, gOriginReported = true;
+      originListener = gOriginListener;
+    }
   }
+  if (originListener) originListener(gReportedOrigin);
   if (!mesh) return;
 
   // Materials are owned by the game; a MaterialPtr is "set" when its first word is non-null.
@@ -518,6 +527,21 @@ void show(std::shared_ptr<const Structure> s, bool atPlayer) {
 }
 
 void moveToPlayer() { gPlaceAtPlayer = true; }
+
+void setOrigin(std::array<int, 3> origin) {
+  std::lock_guard lock(gMu);
+  gPlaceAtPlayer = false;
+  gPlaced.clear();
+  gFullCheck = true;
+  gOrigin = origin;
+  rebuildLocked();
+}
+
+void setOriginListener(std::function<void(std::array<int, 3>)> listener) {
+  std::lock_guard lock(gMu);
+  gOriginListener = std::move(listener);
+  gOriginReported = false;
+}
 
 Snapshot snapshot() {
   std::lock_guard lock(gMu);

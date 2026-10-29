@@ -82,10 +82,10 @@ void MaterialsPanel::setLayer(int layer, int layerCount, bool single) {
   redrawLocked();
 }
 
-void MaterialsPanel::setState(bool hologram, bool easyPlace, bool mirror) {
+void MaterialsPanel::setState(bool hologram, bool easyPlace, bool mirror, bool locked) {
   std::lock_guard lock(mu_);
-  if (hologram == hologram_ && easyPlace == easyPlace_ && mirror == mirror_) return;
-  hologram_ = hologram, easyPlace_ = easyPlace, mirror_ = mirror;
+  if (hologram == hologram_ && easyPlace == easyPlace_ && mirror == mirror_ && locked == locked_) return;
+  hologram_ = hologram, easyPlace_ = easyPlace, mirror_ = mirror, locked_ = locked;
   redrawLocked();
 }
 
@@ -184,7 +184,7 @@ float textWidth(const std::string &s, float font) {
   return font * 0.55f * n;
 }
 
-enum class Icon { List, Move, Up, Down };
+enum class Icon { List, Move, Up, Down, Lock };
 
 // Icons from plain rectangles, centred in an s x s square at (x, y).
 void icon(std::vector<mm::DrawCommand> &cmds, Icon which, float x, float y, float s) {
@@ -204,6 +204,15 @@ void icon(std::vector<mm::DrawCommand> &cmds, Icon which, float x, float y, floa
       rect(cmds, cx + a - t / 2, cy - b / 2, t, b, kText);
     }
     break;
+  case Icon::Lock: {  // shackle (three bars) over a body with a keyhole
+    const float bw = s * 0.46f, bh = s * 0.3f, top = cy - s * 0.02f;
+    rect(cmds, cx - bw * 0.35f, top - s * 0.24f, t, s * 0.24f, kText);
+    rect(cmds, cx + bw * 0.35f - t, top - s * 0.24f, t, s * 0.24f, kText);
+    rect(cmds, cx - bw * 0.35f, top - s * 0.24f, bw * 0.7f, t, kText);
+    rect(cmds, cx - bw / 2, top, bw, bh, kText);
+    rect(cmds, cx - t / 2, top + bh * 0.3f, t, bh * 0.4f, kHeader);
+    break;
+  }
   case Icon::Up:
   case Icon::Down:
     for (int k = 0; k < 4; ++k) {  // a stepped triangle, 4 rows
@@ -283,7 +292,7 @@ void MaterialsPanel::redrawLocked() {
         text(cmds, x_ + pad * 2, yy + (row_ - font) / 2, font, kDim, title);
         yy += row_ + pad;
         listTop_ = yy;
-        listBottom_ = listTop_ + row_ * 9;
+        listBottom_ = listTop_ + row_ * 6;
         const float wellX = x_ + pad, wellW = w_ - pad * 2;
         rect(cmds, wellX, listTop_, wellW, listBottom_ - listTop_, kWell);
 
@@ -336,6 +345,9 @@ void MaterialsPanel::redrawLocked() {
     bx -= s + pad;
     button(bx, y_ + pad, s, s, "", "_tab", "blocks", !collapsed_ && tab_ == Tab::Blocks);
     icon(cmds, Icon::List, bx, y_ + pad, s);
+    bx -= s + pad;
+    button(bx, y_ + pad, s, s, "", "lock", locked_ ? "0" : "1", locked_);
+    icon(cmds, Icon::Lock, bx, y_ + pad, s);
   }
   mm::submitDrawCommands(moduleId_, cmds);
 }

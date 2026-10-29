@@ -11,6 +11,8 @@
 #include <pl/ModMenuConfig.hpp>
 
 #include <algorithm>
+#include <array>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -98,6 +100,19 @@ public:
     hologram::setVisible(hologramOn_);
     textured::setEnabled(texturedOn_);
     easyplace::setEnabled(easyPlaceOn_);
+    hologram::setOriginListener([this](std::array<int, 3> origin) {
+      std::lock_guard lock(mu_);
+      origin_ = origin, haveOrigin_ = true;
+      saveSettingsLocked();
+    });
+    {
+      // The structure comes back where it was left, with the same rotation, mirror and layer view.
+      std::lock_guard lock(mu_);
+      if (!savedName_.empty() && haveOrigin_) {
+        const auto origin = origin_;
+        loadLocked(savedName_, &savedView_, &origin);
+      }
+    }
     easyplace::setAirPlace(airPlaceOn_);
     {
       std::lock_guard lock(mu_);
@@ -115,6 +130,7 @@ public:
           }
           ++view_.layer;
           hologram::setView(view_);
+          saveSettingsLocked();
           panel_.toast("Layer " + std::to_string(view_.layer) + " done, now layer " + std::to_string(view_.layer + 1));
           publishLocked();
         },
@@ -146,6 +162,7 @@ public:
 
   bool disable(pl::mod::ModContext &ctx) {
     hologram::setProgressListener(nullptr);
+    hologram::setOriginListener(nullptr);
     panel_.shutdown();
     hologram::uninstall();
     easyplace::uninstall();
@@ -187,7 +204,14 @@ private:
       easyplace::setAirPlace(airPlaceOn_);
       saveSettingsLocked();
       return;
+    } else if (key == "lock") {
+      locked_ = value == "true" || value == "1";
+      saveSettingsLocked();
+      syncLayerLocked();
+      panel_.toast(locked_ ? "Placement locked" : "Placement unlocked");
+      return;
     } else if (key == "move") {
+      if (locked_) return panel_.toast("Placement is locked");
       hologram::moveToPlayer();
       status_ = "Hologram moved to you";
     } else if (onPlacementLocked(key, value)) {
@@ -216,6 +240,12 @@ private:
       int dx, dy, dz;
     } kNudges[] = {{"east", 1, 0, 0}, {"west", -1, 0, 0}, {"up", 0, 1, 0},
                    {"down", 0, -1, 0}, {"south", 0, 0, 1}, {"north", 0, 0, -1}};
+    const bool moves = key == "rotate" || key == "mirror" ||
+                       std::any_of(std::begin(kNudges), std::end(kNudges), [&](const auto &n) { return key == n.key; });
+    if (moves && locked_) {
+      panel_.toast("Placement is locked");
+      return true;
+    }
     for (const auto &n : kNudges)
       if (key == n.key) {
         hologram::nudge(n.dx, n.dy, n.dz);
@@ -236,19 +266,21 @@ private:
       view_.layer = std::clamp(view_.layer + (key == "layer_up" ? 1 : -1), 0, maxLayer);
       if (view_.layers == View::Layers::All) view_.layers = View::Layers::Single;
       hologram::setView(view_);
+      saveSettingsLocked();
       publishLocked();  // keeps the layer slider in step with the buttons
       return true;
     } else {
       return false;
     }
     hologram::setView(view_);
+    saveSettingsLocked();
     syncLayerLocked();
     return true;
   }
 
   void syncLayerLocked() {
     panel_.setLayer(view_.layer, loadedName_.empty() ? 0 : loaded_.size[1], view_.layers != View::Layers::All);
-    panel_.setState(hologramOn_, easyPlaceOn_, view_.mirror);
+    panel_.setState(hologramOn_, easyPlaceOn_, view_.mirror, locked_);
   }
 
   // Converts a Java Litematica schematic and keeps it as <name>.mcstructure next to the others.
@@ -321,7 +353,9 @@ private:
     for (const auto &p : findStructures({structuresDir_})) files_.push_back(p.filename().string());
   }
 
-  void loadLocked(const std::string &name) {
+  // `view` and `origin` restore a saved placement; without them the structure appears at the player, or at the
+  // current spot while placement is locked.
+  void loadLocked(const std::string &name, const View *view = nullptr, const std::array<int, 3> *origin = nullptr) {
     Structure s;
     std::string error;
     if (!loadStructureFile(structuresDir_ / fs::path(name).filename(), s, error)) {
@@ -329,18 +363,23 @@ private:
       ctx_->logger().warn("BE-Matica: {}", status_);
       return;
     }
-    showLocked(name, std::move(s));
+    showLocked(name, std::move(s), view, origin);
   }
 
-  void showLocked(const std::string &name, Structure &&s) {
+  void showLocked(const std::string &name, Structure &&s, const View *view = nullptr,
+                  const std::array<int, 3> *origin = nullptr) {
     loaded_ = std::move(s);
     loadedName_ = name;
     materials_ = countMaterials(loaded_);
     status_ = "Loaded " + name;
     panel_.setContent(name.substr(0, name.rfind('.')), materials_);
-    view_ = View{};
+    view_ = view ? *view : View{};
     hologram::setView(view_);
-    hologram::show(std::make_shared<const Structure>(loaded_), true);
+    const bool keep = origin || (locked_ && haveOrigin_);
+    hologram::show(std::make_shared<const Structure>(loaded_), !keep);
+    if (keep) hologram::setOrigin(origin ? *origin : origin_);
+    saveSettingsLocked();
+    syncLayerLocked();
     ctx_->logger().info("BE-Matica: loaded {} ({})", name, sizeText(loaded_));
   }
 
@@ -480,12 +519,23 @@ private:
       else if (key == "outlines") outlinesOn_ = value == "1";
       else if (key == "fill") fillOn_ = value == "1";
       else if (key == "opacity") opacity_ = std::clamp(std::atoi(value.c_str()), 10, 100);
+      else if (key == "structure") savedName_ = value;
+      else if (key == "origin") haveOrigin_ = std::sscanf(value.c_str(), "%d,%d,%d", &origin_[0], &origin_[1], &origin_[2]) == 3;
+      else if (key == "rotation") savedView_.rotation = std::clamp(std::atoi(value.c_str()), 0, 3);
+      else if (key == "mirror") savedView_.mirror = value == "1";
+      else if (key == "layers") savedView_.layers = static_cast<View::Layers>(std::clamp(std::atoi(value.c_str()), 0, 2));
+      else if (key == "layer") savedView_.layer = std::max(0, std::atoi(value.c_str()));
+      else if (key == "locked") locked_ = value == "1";
     }
   }
 
   void saveSettingsLocked() {
     std::ofstream(settingsFile()) << "easyplace=" << easyPlaceOn_ << "\nairplace=" << airPlaceOn_ << "\nhologram=" << hologramOn_ << "\ntextured=" << texturedOn_
-                                  << "\noutlines=" << outlinesOn_ << "\nfill=" << fillOn_ << "\nopacity=" << opacity_ << "\n";
+                                  << "\noutlines=" << outlinesOn_ << "\nfill=" << fillOn_ << "\nopacity=" << opacity_ << "\n"
+                                  << "structure=" << loadedName_ << "\norigin=" << origin_[0] << ',' << origin_[1] << ','
+                                  << origin_[2] << "\nrotation=" << view_.rotation << "\nmirror=" << view_.mirror
+                                  << "\nlayers=" << static_cast<int>(view_.layers) << "\nlayer=" << view_.layer
+                                  << "\nlocked=" << locked_ << "\n";
   }
 
   void syncPanelLocked() { panel_.setVisible(controls_); }
@@ -496,6 +546,11 @@ private:
   bool easyPlaceOk_ = false, easyPlaceOn_ = false, airPlaceOn_ = true;
   int opacity_ = 45;
   View view_;
+  // Placement kept across launches: the structure's world origin, and the name/view read at start-up.
+  std::array<int, 3> origin_{};
+  bool haveOrigin_ = false, locked_ = false;
+  std::string savedName_;
+  View savedView_;
   fs::path structuresDir_;
   // Recursive: the launcher may call back into onSetting while a settings page is being set.
   std::recursive_mutex mu_;

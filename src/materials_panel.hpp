@@ -19,7 +19,7 @@ namespace bematica {
 class MaterialsPanel {
 public:
   // `control` receives the same keys as the settings page: east, west, up, down, south, north, rotate, mirror,
-  // layer_down, layer_up, layers, hologram, easyplace.
+  // layer_down, layer_up, layers, hologram, easyplace, lock.
   void init(std::string moduleId, std::string modId,
             std::function<void(std::string_view key, std::string_view value)> control);
   void shutdown();
@@ -29,7 +29,7 @@ public:
   void toast(std::string text);   // short message near the top of the screen
   // `layer` counts from 0; `single` is false while every layer is shown.
   void setLayer(int layer, int layerCount, bool single);
-  void setState(bool hologram, bool easyPlace, bool mirror);
+  void setState(bool hologram, bool easyPlace, bool mirror, bool locked);
   void setProgress(size_t built, size_t total);
 
 private:
@@ -47,7 +47,7 @@ private:
   std::function<void(std::string_view, std::string_view)> control_;
   int layer_ = 0, layerCount_ = 0;
   bool single_ = false;
-  bool hologram_ = false, easyPlace_ = false, mirror_ = false;
+  bool hologram_ = false, easyPlace_ = false, mirror_ = false, locked_ = false;
   size_t built_ = 0, total_ = 0;
   enum class Tab { Move, Blocks } tab_ = Tab::Move;
   bool collapsed_ = false;
