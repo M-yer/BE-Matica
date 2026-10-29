@@ -194,14 +194,40 @@ void uninstall() {
 void setEnabled(bool on) { gEnabled = on; }
 bool enabled() { return gEnabled && gReady; }
 
-bool draw(void *screenContext, void *tess, const std::vector<BlockCell> &blocks, const Structure &s, const Vec3f &cam) {
+// The level renderer's player keeps a pointer (near +0x1120) to an object holding the block texture variant (near
+// +0x1a8). Offsets move between versions, so both are found by scanning for a variant with a texture in it.
+bool findBlockTexture(const char *lrp, TextureVariant &out) {
+  static int found = -2;  // -2 not searched yet, -1 not found, else (lrpOff << 16) | holderOff
+  if (found == -2) {
+    found = -1;
+    for (unsigned lo = 0x1080; lo <= 0x1180 && found < 0; lo += 8) {
+      const char *holder = nullptr;
+      if (!safeRead(lrp + lo, &holder, 8) || !holder) continue;
+      for (unsigned vo = 0x140; vo <= 0x220; vo += 8) {
+        uint32_t kind = 0;
+        if (!safeRead(holder + vo + 0x18, &kind, 4) || kind < 1 || kind > 3) continue;
+        uint64_t w[3]{};
+        safeRead(holder + vo, w, sizeof(w));
+        if (!w[0]) continue;  // an empty handle is not a texture
+        __android_log_print(ANDROID_LOG_INFO, "BE-Matica", "Textured: block texture at player+%#x -> +%#x, kind %u (%016llx %016llx %016llx)",
+                            lo, vo, kind, static_cast<unsigned long long>(w[0]), static_cast<unsigned long long>(w[1]),
+                            static_cast<unsigned long long>(w[2]));
+        found = static_cast<int>((lo << 16) | vo);
+        break;
+      }
+    }
+    if (found < 0) __android_log_print(ANDROID_LOG_WARN, "BE-Matica", "Textured: no block texture found near player+0x1120");
+  }
+  if (found < 0) return false;
+  const char *holder = nullptr;
+  return safeRead(lrp + (found >> 16), &holder, 8) && holder && safeRead(holder + (found & 0xFFFF), &out, sizeof(out));
+}
+
+bool draw(void *screenContext, void *tess, const char *lrp, const std::vector<BlockCell> &blocks, const Structure &s,
+          const Vec3f &cam) {
   if (!enabled()) return false;
   TextureVariant texture;
-  {
-    std::lock_guard lock(gTextureMu);
-    if (!gHaveTexture) return false;  // hold a block once so the game draws its atlas and we can see it
-    texture = gBlockTexture;
-  }
+  if (!findBlockTexture(lrp, texture)) return false;
   static void *blockTessellator = nullptr;
   if (!blockTessellator) {
     blockTessellator = std::aligned_alloc(16, kBlockTessellatorSize);
