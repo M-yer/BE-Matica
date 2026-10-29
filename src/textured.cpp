@@ -238,7 +238,7 @@ bool draw(void *screenContext, void *tess, const char *lrp, const std::vector<Bl
   static bool materialTried = false;
   if (!materialTried) {
     materialTried = true;
-    material = gMaterialGet(gMaterialGroup, std::string("entity_alphablend"));
+    material = gMaterialGet(gMaterialGroup, HashedString("entity_alphablend"));
     __android_log_print(ANDROID_LOG_INFO, "BE-Matica", "Textured: material entity_alphablend %p", material.ptr);
   }
   if (!material.ptr) return false;

@@ -132,7 +132,9 @@ struct MaterialPtr {
 };
 using BlockTessCtorFn = void *(*)(void *self, void *blockSource);
 using AppendBlockFn = void (*)(void *blockTessellator, void *tess, const void *block);
-using MaterialGetFn = MaterialPtr (*)(void *group, const std::string &name);
+// Takes a HashedString (hash first, then the name), like block lookups.
+using MaterialGetFn = MaterialPtr (*)(void *group, const HashedString &name);
+
 using MeshRenderFn = void (*)(void *mesh, void *context, void *material, uint64_t a3, uint64_t a4, void *textures,
                               void *a6, void *a7);
 
