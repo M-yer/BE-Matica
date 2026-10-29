@@ -95,6 +95,7 @@ HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, const View
         const size_t i = s.index(x, y, z);
         if (!solid[i]) continue;
         const auto &c = colors[s.layers[0][i]];
+        bool exposed = false;
         for (int f = 0; f < 6; ++f) {
           const int nx = x + kDir[f][0], ny = y + kDir[f][1], nz = z + kDir[f][2];
           const bool inside = nx >= 0 && ny >= 0 && nz >= 0 && nx < sx && ny < sy && nz < sz;
@@ -108,6 +109,12 @@ HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, const View
           }
           q.r = c[0], q.g = c[1], q.b = c[2];
           mesh.quads.push_back(q);
+          exposed = true;
+        }
+        if (exposed) {
+          const Vec3f w = toWorld(x + 0.5f, y + 0.5f, z + 0.5f);
+          mesh.blocks.push_back({static_cast<int>(std::floor(w.x)), static_cast<int>(std::floor(w.y)),
+                                 static_cast<int>(std::floor(w.z)), s.layers[0][i]});
         }
       }
 

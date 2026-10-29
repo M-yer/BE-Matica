@@ -48,6 +48,25 @@ constexpr const char *HandItem = "28 1C 00 12 1F 05 00 71 ? ? ? ? 08 00 40 F9 01
 constexpr const char *BlockRegistry = "? ? ? ? ? ? ? ? C0 03 5F D6 E2 03 1F 2A E3 03 1F 2A E4 03 1F 2A";
 // Looks up a BlockType by its full name (HashedString); old names like minecraft:grass resolve too
 constexpr const char *BlockLookupByName = "E2 03 1F 2A E3 03 1F 2A E4 03 1F 2A ? ? ? ? FF 03 02 D1 FD 7B 03 A9";
+
+// Textured hologram (experimental)
+// BlockTessellator::BlockTessellator(BlockSource*) — the object is kBlockTessellatorSize bytes
+constexpr const char *BlockTessellatorCtor =
+    "FF 43 03 D1 FD 7B 07 A9 FC 6F 08 A9 FA 67 09 A9 F8 5F 0A A9 F6 57 0B A9 F4 4F 0C A9 FD C3 01 91 5B D0 3B D5 F3 03 00 "
+    "AA 16 B0 05 91";
+// BlockTessellator::appendTessellatedBlock(Tessellator&, const Block&): one block at the tessellator's offset
+constexpr const char *AppendTessellatedBlock =
+    "FF 83 07 D1 E9 23 17 6D FD 7B 18 A9 FC 6F 19 A9 FA 67 1A A9 F8 5F 1B A9 F6 57 1C A9 F4 4F 1D A9 FD 03 06 91 5C D0 3B D5";
+// Material group lookup by name, returning a MaterialPtr
+constexpr const char *MaterialGroupGet = "E2 03 01 AA 01 80 00 91 E0 03 08 AA ? ? ? ? FF C3 01 D1 FD 7B 01 A9";
+// mce::Mesh render: (mesh, context, material, start, count, textures, ...)
+constexpr const char *MeshRender =
+    "FF C3 07 D1 FD 7B 1A A9 FC DB 00 F9 F8 5F 1C A9 F6 57 1D A9 F4 4F 1E A9 FD 83 06 91 00 E4 00 6F 54 D0 3B D5 F5 43 01 91";
+// Code that loads the global material group (adrp + add at MaterialGroupRefAdrp) to create "entity_alphablend"
+constexpr const char *MaterialGroupRef =
+    "? ? ? ? ? ? ? ? A0 C3 00 D1 ? ? ? ? ? ? ? ? ? ? ? ? A8 03 01 D1 A1 C3 00 D1 ? ? ? ? BB 67 7C A9 ? ? ? ? 21 23 00 91 "
+    "20 00 80 52 ? ? ? ? 78 FE 40 F9";
+constexpr uintptr_t MaterialGroupRefAdrp = 0x10;
 }  // namespace sig
 
 namespace off {
@@ -102,5 +121,19 @@ using HandItemFn = const void *(*)(void *player, uint8_t hand);
 using BlockRegistryFn = void *(*)();
 using BlockLookupFn = void *(*)(void *registry, const HashedString *name);
 using GetHitResultFn = void *(*)(void *level);
+
+constexpr size_t kBlockTessellatorSize = 0x7960;
+// shared_ptr-like handle; the user-provided destructor makes the ABI return it through x8 like the game does.
+// Deliberately never released: materials live for the whole session.
+struct MaterialPtr {
+  void *ptr = nullptr;
+  void *ctrl = nullptr;
+  ~MaterialPtr() {}
+};
+using BlockTessCtorFn = void *(*)(void *self, void *blockSource);
+using AppendBlockFn = void (*)(void *blockTessellator, void *tess, const void *block);
+using MaterialGetFn = MaterialPtr (*)(void *group, const std::string &name);
+using MeshRenderFn = void (*)(void *mesh, void *context, void *material, uint64_t a3, uint64_t a4, void *textures,
+                              void *a6, void *a7);
 
 }  // namespace bematica::game

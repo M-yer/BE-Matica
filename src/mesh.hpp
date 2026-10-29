@@ -21,9 +21,15 @@ struct Line {
   Vec3f a, b;
 };
 
+struct BlockCell {
+  int x, y, z;      // world block position
+  int32_t palette;  // index into the structure palette
+};
+
 struct HologramMesh {
-  std::vector<Quad> quads;  // block faces, world coordinates
-  std::vector<Line> lines;  // outline of the whole structure
+  std::vector<Quad> quads;        // block faces, world coordinates
+  std::vector<Line> lines;        // outline of the whole structure
+  std::vector<BlockCell> blocks;  // blocks with at least one visible face, for the textured view
 };
 
 struct View {

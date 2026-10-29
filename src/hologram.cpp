@@ -2,6 +2,7 @@
 
 #include "game.hpp"
 #include "mesh.hpp"
+#include "textured.hpp"
 
 #include <pl/Logger.hpp>
 #include <pl/memory/Hook.hpp>
@@ -170,7 +171,18 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
   float savedOffset[3];
   std::memcpy(savedOffset, tessOffset, sizeof(savedOffset));
 
-  if (haveFace) drawQuads(screenContext, tess, faceMat, *mesh, cam, gAlpha.load(std::memory_order_relaxed));
+  bool drewTextured = false;
+  if (textured::enabled()) {
+    std::shared_ptr<const Structure> structure;
+    {
+      std::lock_guard lock(gMu);
+      structure = gStructure;
+    }
+    if (tintColor) tintColor[3] = gAlpha.load(std::memory_order_relaxed);  // see-through real blocks
+    if (structure) drewTextured = textured::draw(screenContext, tess, mesh->blocks, *structure, cam);
+    if (tintColor) tintColor[3] = 1.0f;
+  }
+  if (!drewTextured && haveFace) drawQuads(screenContext, tess, faceMat, *mesh, cam, gAlpha.load(std::memory_order_relaxed));
   if (haveLine) drawLines(screenContext, tess, lineMat, *mesh, cam);
 
   std::memcpy(tessOffset, savedOffset, sizeof(savedOffset));
@@ -219,6 +231,7 @@ bool install(pl::log::Logger &log, std::string &error) {
   }
   gRenderLevelOrig.store(reinterpret_cast<RenderLevelFn>(origSlot), std::memory_order_release);
   gRenderLevelTarget = renderLevel;
+  textured::install(log);  // optional: the box hologram works without it
   return true;
 }
 }  // namespace
@@ -232,6 +245,7 @@ void installAsync(pl::log::Logger &log, std::function<void(bool, const std::stri
 }
 
 void uninstall() {
+  textured::uninstall();
   if (gRenderLevelTarget) pl::memory::unhook(gRenderLevelTarget, reinterpret_cast<void *>(&renderLevelDetour));
   gRenderLevelTarget = nullptr;
 }

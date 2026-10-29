@@ -1,5 +1,6 @@
 #include "easyplace.hpp"
 #include "hologram.hpp"
+#include "textured.hpp"
 #include "library.hpp"
 #include "litematic.hpp"
 #include "materials_panel.hpp"
@@ -92,6 +93,7 @@ public:
     loadSettings();
     hologram::setOpacity(opacity_ / 100.0f);
     hologram::setVisible(hologramOn_);
+    textured::setEnabled(texturedOn_);
     easyplace::setEnabled(easyPlaceOn_);
     easyplace::setAirPlace(airPlaceOn_);
     {
@@ -162,6 +164,10 @@ private:
     } else if (key == "refresh") {
       scanLocked();
       status_ = files_.empty() ? "No structures yet" : std::to_string(files_.size()) + " structures found";
+    } else if (key == "textured") {
+      texturedOn_ = value == "true" || value == "1";
+      textured::setEnabled(texturedOn_);
+      saveSettingsLocked();
     } else if (key == "hologram") {
       hologramOn_ = value == "true" || value == "1";
       hologram::setVisible(enabled_ && hologramOn_);
@@ -352,6 +358,11 @@ private:
       schema.node(N{.id = "hologram", .key = "hologram", .category = "main", .title = "Show hologram",
                     .type = T::Toggle, .defaultValue = "true", .currentValue = hologramOn_ ? "true" : "false",
                     .hasCurrentValue = true});
+      schema.node(N{.id = "textured", .key = "textured", .category = "main", .title = "Real block textures (experimental)",
+                    .description = "Draw ghost blocks with the game's own models and textures. Hold any block once so "
+                                   "the game shows its textures. Turn off if anything looks wrong.",
+                    .type = T::Toggle, .defaultValue = "false", .currentValue = texturedOn_ ? "true" : "false",
+                    .hasCurrentValue = true});
       if (easyPlaceOk_) {
         schema.node(N{.id = "easyplace", .key = "easyplace", .category = "easyplace", .title = "Easy Place",
                       .description = "Tap where a ghost block is to place it there. Only the right block is "
@@ -442,12 +453,13 @@ private:
       if (key == "easyplace") easyPlaceOn_ = value == "1";
       else if (key == "airplace") airPlaceOn_ = value == "1";
       else if (key == "hologram") hologramOn_ = value == "1";
+      else if (key == "textured") texturedOn_ = value == "1";
       else if (key == "opacity") opacity_ = std::clamp(std::atoi(value.c_str()), 10, 100);
     }
   }
 
   void saveSettingsLocked() {
-    std::ofstream(settingsFile()) << "easyplace=" << easyPlaceOn_ << "\nairplace=" << airPlaceOn_ << "\nhologram=" << hologramOn_
+    std::ofstream(settingsFile()) << "easyplace=" << easyPlaceOn_ << "\nairplace=" << airPlaceOn_ << "\nhologram=" << hologramOn_ << "\ntextured=" << texturedOn_
                                   << "\nopacity=" << opacity_ << "\n";
   }
 
@@ -455,7 +467,7 @@ private:
 
   pl::mod::ModContext *ctx_ = nullptr;
   MaterialsPanel panel_;
-  bool hologramOk_ = false, hologramOn_ = true;
+  bool hologramOk_ = false, hologramOn_ = true, texturedOn_ = false;
   bool easyPlaceOk_ = false, easyPlaceOn_ = false, airPlaceOn_ = true;
   int opacity_ = 45;
   View view_;
