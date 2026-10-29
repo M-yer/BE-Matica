@@ -589,13 +589,15 @@ private:
   void addPlacementNodes(mm::ConfigSchemaBuilder &schema) {
     using N = mm::ConfigNodeV2;
     using T = mm::ConfigControlTypeV2;
-    const std::pair<const char *, const char *> moves[] = {
-        {"up", "Move up"},         {"down", "Move down"},       {"north", "Move north (-Z)"},
-        {"south", "Move south (+Z)"}, {"west", "Move west (-X)"}, {"east", "Move east (+X)"},
-        {"rotate", "Rotate 90\u00B0"}, {"mirror", "Mirror"}};
-    for (const auto &[key, title] : moves)
-      schema.node(N{.id = key, .key = key, .category = "place", .title = title, .section = "Placement",
-                    .type = T::Button});
+    // Same controls and directions as the panel's Move tab: the D-pad, the Y pair, then rotate and mirror.
+    static constexpr const char *kMoves[][3] = {
+        {"south", "\u25B2  Up  (south, +Z)", "D-pad (X / Z)"},  {"east", "\u25C0  Left  (east, +X)", "D-pad (X / Z)"},
+        {"west", "\u25B6  Right  (west, -X)", "D-pad (X / Z)"}, {"north", "\u25BC  Down  (north, -Z)", "D-pad (X / Z)"},
+        {"up", "\u25B2  Raise  (+Y)", "Height (Y)"},            {"down", "\u25BC  Lower  (-Y)", "Height (Y)"},
+        {"rotate", "Rotate +90\u00B0", "Turn"},                 {"mirror", "Mirror", "Turn"}};
+    for (const auto &m : kMoves)
+      schema.node(N{.id = m[0], .key = m[0], .category = "place", .title = m[1], .section = m[2],
+                    .type = T::Button, .disabled = locked_});
 
     const char *mode = view_.layers == View::Layers::Single ? "single"
                        : view_.layers == View::Layers::UpTo ? "upto"
