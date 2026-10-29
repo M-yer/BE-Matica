@@ -66,7 +66,21 @@ void meshRenderDetour(void *mesh, void *context, void *material, uint64_t a3, ui
   MeshRenderFn orig;
   while (!(orig = gMeshRenderOrig.load(std::memory_order_acquire))) std::this_thread::yield();
   uint32_t kind = 0;
-  if (textures && safeRead(static_cast<char *>(textures) + 0x18, &kind, sizeof(kind)) && kind >= 1 && kind <= 3) {
+  if (textures) safeRead(static_cast<char *>(textures) + 0x18, &kind, sizeof(kind));
+  {
+    // Diagnostic: every distinct caller once, with the texture kind and material it uses.
+    const uintptr_t from = reinterpret_cast<uintptr_t>(__builtin_return_address(0)) - gLibBase;
+    static std::mutex callersMu;
+    static std::set<uintptr_t> callers;
+    std::lock_guard lock(callersMu);
+    if (callers.size() < 60 && callers.insert(from).second) {
+      const void *mat = nullptr;
+      if (material) safeRead(material, &mat, 8);
+      __android_log_print(ANDROID_LOG_INFO, "BE-Matica", "Mesh draw from %#lx: textures %p kind %u, material %p",
+                          static_cast<unsigned long>(from), textures, kind, mat);
+    }
+  }
+  if (textures && kind >= 1 && kind <= 3) {
     const uintptr_t from = reinterpret_cast<uintptr_t>(__builtin_return_address(0)) - gLibBase;
     static std::mutex seenMu;
     static std::set<std::pair<uintptr_t, uint32_t>> seen;
