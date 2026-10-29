@@ -30,6 +30,7 @@ struct HologramMesh {
   std::vector<Quad> quads;        // block faces, world coordinates
   std::vector<Line> lines;        // outline of the whole structure
   std::vector<BlockCell> blocks;  // blocks with at least one visible face, for the textured view
+  std::vector<Line> blockLines;   // edges of those blocks (shared edges once), for the outline style
 };
 
 struct View {

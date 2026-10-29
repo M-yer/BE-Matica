@@ -92,6 +92,8 @@ public:
 
     loadSettings();
     hologram::setOpacity(opacity_ / 100.0f);
+    hologram::setOutlines(outlinesOn_);
+    hologram::setFill(fillOn_);
     hologram::setVisible(hologramOn_);
     textured::setEnabled(texturedOn_);
     easyplace::setEnabled(easyPlaceOn_);
@@ -189,6 +191,12 @@ private:
       status_ = "Hologram moved to you";
     } else if (onPlacementLocked(key, value)) {
       return;  // hologram-only change; the page stays as it is
+    } else if (key == "outlines" || key == "fill") {
+      const bool on = value == "true" || value == "1";
+      (key == "outlines" ? outlinesOn_ : fillOn_) = on;
+      hologram::setOutlines(outlinesOn_);
+      hologram::setFill(fillOn_);
+      saveSettingsLocked();
     } else if (key == "opacity") {
       opacity_ = std::clamp(std::atoi(std::string(value).c_str()), 10, 100);
       hologram::setOpacity(opacity_ / 100.0f);
@@ -393,6 +401,12 @@ private:
       schema.node(N{.id = "opacity", .key = "opacity", .category = "main", .title = "Hologram opacity",
                     .type = T::SliderInt, .defaultValue = "45", .currentValue = std::to_string(opacity_),
                     .hasCurrentValue = true, .minValue = "10", .maxValue = "100", .step = "5", .unit = "%"});
+      schema.node(N{.id = "outlines", .key = "outlines", .category = "main", .title = "Block outlines",
+                    .description = "Light blue edges on every ghost block.", .type = T::Toggle, .defaultValue = "true",
+                    .currentValue = outlinesOn_ ? "true" : "false", .hasCurrentValue = true});
+      schema.node(N{.id = "fill", .key = "fill", .category = "main", .title = "Tinted fill",
+                    .description = "Coloured see-through faces. Turn off for outlines only.", .type = T::Toggle,
+                    .defaultValue = "true", .currentValue = fillOn_ ? "true" : "false", .hasCurrentValue = true});
       if (!loadedName_.empty()) addPlacementNodes(schema);
     }
     schema.node(N{.id = "refresh", .key = "refresh", .category = "main", .title = "Refresh list",
@@ -461,20 +475,22 @@ private:
       else if (key == "airplace") airPlaceOn_ = value == "1";
       else if (key == "hologram") hologramOn_ = value == "1";
       else if (key == "textured") texturedOn_ = value == "1";
+      else if (key == "outlines") outlinesOn_ = value == "1";
+      else if (key == "fill") fillOn_ = value == "1";
       else if (key == "opacity") opacity_ = std::clamp(std::atoi(value.c_str()), 10, 100);
     }
   }
 
   void saveSettingsLocked() {
     std::ofstream(settingsFile()) << "easyplace=" << easyPlaceOn_ << "\nairplace=" << airPlaceOn_ << "\nhologram=" << hologramOn_ << "\ntextured=" << texturedOn_
-                                  << "\nopacity=" << opacity_ << "\n";
+                                  << "\noutlines=" << outlinesOn_ << "\nfill=" << fillOn_ << "\nopacity=" << opacity_ << "\n";
   }
 
   void syncPanelLocked() { panel_.setVisible(controls_); }
 
   pl::mod::ModContext *ctx_ = nullptr;
   MaterialsPanel panel_;
-  bool hologramOk_ = false, hologramOn_ = true, texturedOn_ = false;
+  bool hologramOk_ = false, hologramOn_ = true, texturedOn_ = false, outlinesOn_ = true, fillOn_ = true;
   bool easyPlaceOk_ = false, easyPlaceOn_ = false, airPlaceOn_ = true;
   int opacity_ = 45;
   View view_;

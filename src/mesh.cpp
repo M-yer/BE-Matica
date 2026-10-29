@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <unordered_set>
+#include <utility>
 
 namespace bematica {
 namespace {
@@ -89,6 +91,10 @@ HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, const View
     return Vec3f{origin[0] + x, origin[1] + y, origin[2] + z};
   };
 
+  struct PairHash {
+    size_t operator()(const std::pair<uint64_t, uint64_t> &p) const { return std::hash<uint64_t>()(p.first * 31 + p.second); }
+  };
+  std::unordered_set<std::pair<uint64_t, uint64_t>, PairHash> edges;
   for (int x = 0; x < sx; ++x)
     for (int y = 0; y < sy; ++y)
       for (int z = 0; z < sz; ++z) {
@@ -110,6 +116,24 @@ HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, const View
           q.r = c[0], q.g = c[1], q.b = c[2];
           mesh.quads.push_back(q);
           exposed = true;
+        }
+        if (exposed && mesh.blockLines.size() < maxQuads) {
+          // The 12 edges of the block; an edge shared with a neighbouring block is added once.
+          static constexpr int kCube[12][2][3] = {{{0, 0, 0}, {1, 0, 0}}, {{1, 0, 0}, {1, 0, 1}}, {{1, 0, 1}, {0, 0, 1}},
+                                                  {{0, 0, 1}, {0, 0, 0}}, {{0, 1, 0}, {1, 1, 0}}, {{1, 1, 0}, {1, 1, 1}},
+                                                  {{1, 1, 1}, {0, 1, 1}}, {{0, 1, 1}, {0, 1, 0}}, {{0, 0, 0}, {0, 1, 0}},
+                                                  {{1, 0, 0}, {1, 1, 0}}, {{1, 0, 1}, {1, 1, 1}}, {{0, 0, 1}, {0, 1, 1}}};
+          for (const auto &e : kCube) {
+            const Vec3f a = toWorld(x + e[0][0], y + e[0][1], z + e[0][2]);
+            const Vec3f b = toWorld(x + e[1][0], y + e[1][1], z + e[1][2]);
+            auto key = [](const Vec3f &v) {
+              return (static_cast<uint64_t>(static_cast<uint32_t>(static_cast<int>(v.x) & 0x1FFFFF)) << 42) |
+                     (static_cast<uint64_t>(static_cast<uint32_t>(static_cast<int>(v.y) & 0x1FFFFF)) << 21) |
+                     static_cast<uint64_t>(static_cast<uint32_t>(static_cast<int>(v.z) & 0x1FFFFF));
+            };
+            const uint64_t ka = key(a), kb = key(b);
+            if (edges.insert(ka < kb ? std::make_pair(ka, kb) : std::make_pair(kb, ka)).second) mesh.blockLines.push_back({a, b});
+          }
         }
         if (exposed) {
           const Vec3f w = toWorld(x + 0.5f, y + 0.5f, z + 0.5f);

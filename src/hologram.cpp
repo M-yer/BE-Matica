@@ -47,6 +47,7 @@ bool gHaveCamera = false;
 std::atomic_bool gPlaceAtPlayer{false};
 std::atomic_bool gVisible{true};
 std::atomic<float> gAlpha{0.45f};
+std::atomic_bool gOutlines{true}, gFill{true};
 
 bool finite(const Vec3f &v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
 
@@ -72,13 +73,13 @@ void drawQuads(void *sc, void *tess, void *mat, const HologramMesh &m, const Vec
   }
 }
 
-void drawLines(void *sc, void *tess, void *mat, const HologramMesh &m, const Vec3f &cam) {
-  for (size_t from = 0; from < m.lines.size(); from += kLineBatch) {
-    const size_t to = std::min(m.lines.size(), from + kLineBatch);
+void drawLines(void *sc, void *tess, void *mat, const std::vector<Line> &lines, const Vec3f &cam) {
+  for (size_t from = 0; from < lines.size(); from += kLineBatch) {
+    const size_t to = std::min(lines.size(), from + kLineBatch);
     gBegin(tess, nullptr, LineList, static_cast<int>((to - from) * 2), 0);
     gColor(tess, 0.3f, 0.75f, 1.0f, 1.0f);
     for (size_t i = from; i < to; ++i) {
-      const Line &l = m.lines[i];
+      const Line &l = lines[i];
       gVertex(tess, l.a.x - cam.x, l.a.y - cam.y, l.a.z - cam.z);
       gVertex(tess, l.b.x - cam.x, l.b.y - cam.y, l.b.z - cam.z);
     }
@@ -182,8 +183,11 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
     if (structure) drewTextured = textured::draw(screenContext, tess, static_cast<const char *>(self), lrp, mesh->blocks, *structure, cam);
     if (tintColor) tintColor[3] = 1.0f;
   }
-  if (!drewTextured && haveFace) drawQuads(screenContext, tess, faceMat, *mesh, cam, gAlpha.load(std::memory_order_relaxed));
-  if (haveLine) drawLines(screenContext, tess, lineMat, *mesh, cam);
+  if (!drewTextured && haveFace && gFill.load(std::memory_order_relaxed)) drawQuads(screenContext, tess, faceMat, *mesh, cam, gAlpha.load(std::memory_order_relaxed));
+  if (haveLine) {
+    drawLines(screenContext, tess, lineMat, mesh->lines, cam);
+    if (gOutlines.load(std::memory_order_relaxed)) drawLines(screenContext, tess, lineMat, mesh->blockLines, cam);
+  }
 
   std::memcpy(tessOffset, savedOffset, sizeof(savedOffset));
   if (tintColor) std::memcpy(tintColor, savedTint, sizeof(savedTint));
@@ -278,5 +282,7 @@ void setView(const View &view) {
 }
 void setVisible(bool visible) { gVisible = visible; }
 void setOpacity(float alpha) { gAlpha = std::clamp(alpha, 0.05f, 1.0f); }
+void setOutlines(bool on) { gOutlines = on; }
+void setFill(bool on) { gFill = on; }
 
 }  // namespace bematica::hologram
