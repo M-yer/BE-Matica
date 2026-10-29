@@ -200,15 +200,20 @@ bool findBlockTexture(const char *lrp, TextureVariant &out) {
   static int found = -2;  // -2 not searched yet, -1 not found, else (lrpOff << 16) | holderOff
   if (found == -2) {
     found = -1;
-    for (unsigned lo = 0x1080; lo <= 0x1180 && found < 0; lo += 8) {
+    // Nearest first around +0x1118 (the 1.26.52 offset 0x1120 moved down 8 like the fields around it).
+    for (int step = 0; step <= 24 && found < 0; ++step) {
+      const unsigned lo = 0x1118 + (step % 2 ? -8 : 8) * ((step + 1) / 2);
       const char *holder = nullptr;
       if (!safeRead(lrp + lo, &holder, 8) || !holder) continue;
-      for (unsigned vo = 0x140; vo <= 0x220; vo += 8) {
+      for (unsigned vo : {0x1a8u}) {
         uint32_t kind = 0;
         if (!safeRead(holder + vo + 0x18, &kind, 4) || kind < 1 || kind > 3) continue;
         uint64_t w[3]{};
         safeRead(holder + vo, w, sizeof(w));
-        if (!w[0]) continue;  // an empty handle is not a texture
+        // The handle must be a real pointer to readable memory, not some other number that happens to sit there.
+        uint64_t probe = 0;
+        if (!w[0] || (w[0] >> 56 != 0 && w[0] >> 56 != 0xb4) || !safeRead(reinterpret_cast<const void *>(w[0]), &probe, 8))
+          continue;
         __android_log_print(ANDROID_LOG_INFO, "BE-Matica", "Textured: block texture at player+%#x -> +%#x, kind %u (%016llx %016llx %016llx)",
                             lo, vo, kind, static_cast<unsigned long long>(w[0]), static_cast<unsigned long long>(w[1]),
                             static_cast<unsigned long long>(w[2]));
@@ -216,7 +221,7 @@ bool findBlockTexture(const char *lrp, TextureVariant &out) {
         break;
       }
     }
-    if (found < 0) __android_log_print(ANDROID_LOG_WARN, "BE-Matica", "Textured: no block texture found near player+0x1120");
+    if (found < 0) __android_log_print(ANDROID_LOG_WARN, "BE-Matica", "Textured: no block texture found near player+0x1118");
   }
   if (found < 0) return false;
   const char *holder = nullptr;
