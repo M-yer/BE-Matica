@@ -14,6 +14,9 @@
 #include <algorithm>
 #include <android/log.h>
 #include <atomic>
+#include <chrono>
+#include <string>
+#include <string_view>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -124,6 +127,117 @@ void logFirstFrame(void *screenContext, char *lrp, const Vec3f &cam, void *faceM
                       tint(0x30).c_str());
 }
 
+// Copies memory that may not be mapped: a bad address fails instead of crashing.
+bool safeRead(const void *src, void *dst, size_t n) {
+  iovec local{dst, n}, remote{reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(src) & 0x00FFFFFFFFFFFFFFULL), n};
+  return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == static_cast<ssize_t>(n);
+}
+
+// Class name of a polymorphic game object from its RTTI ("11ClientLevel" -> "ClientLevel"), or "".
+std::string className(const void *obj) {
+  const void *vtable = nullptr, *typeInfo = nullptr, *name = nullptr;
+  if (!obj || !safeRead(obj, &vtable, 8) || !vtable) return {};
+  if (!safeRead(static_cast<const char *>(vtable) - 8, &typeInfo, 8) || !typeInfo) return {};
+  if (!safeRead(static_cast<const char *>(typeInfo) + 8, &name, 8) || !name) return {};
+  char buf[33]{};
+  if (!safeRead(name, buf, 32) && !safeRead(name, buf, 16)) return {};
+  std::string_view n(buf);
+  while (!n.empty() && n.front() >= '0' && n.front() <= '9') n.remove_prefix(1);
+  return std::string(n);
+}
+
+// The player's aim ray, from the level's current hit result. The level is found in the level renderer by its class
+// name, and the hit result getter is only called after checking it is the expected one-line field getter.
+bool aimRay(const char *levelRenderer, Vec3f &eye, Vec3f &dir) {
+  static int levelField = -2;
+  if (levelField == -2) {
+    levelField = -1;
+    for (unsigned off = 0; off < 0x1000 && levelField < 0; off += 8) {
+      const void *p = nullptr;
+      if (!safeRead(levelRenderer + off, &p, 8) || !p) continue;
+      const std::string name = className(p);
+      if (name.size() >= 5 && name.compare(name.size() - 5, 5, "Level") == 0) levelField = static_cast<int>(off);
+    }
+  }
+  if (levelField < 0) return false;
+  void *level = nullptr;
+  void **vtable = nullptr;
+  void *getter = nullptr;
+  if (!safeRead(levelRenderer + levelField, &level, 8) || !level || !safeRead(level, &vtable, 8) || !vtable ||
+      !safeRead(vtable + off::Level_vtGetHitResult / sizeof(void *), &getter, 8) || !getter)
+    return false;
+  uint32_t code[2]{};
+  if (!safeRead(getter, code, sizeof(code)) || (code[0] & 0xFFC003FF) != 0xF9400000 || code[1] != 0xD65F03C0) return false;
+  const char *hr = static_cast<const char *>(reinterpret_cast<GetHitResultFn>(getter)(level));
+  Vec3f d{};
+  if (!hr || !safeRead(hr + off::HitResult_rayStart, &eye, sizeof(eye)) || !safeRead(hr + off::HitResult_rayDir, &d, sizeof(d)))
+    return false;
+  const float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+  if (!(len > 1e-4f) || !finite(eye)) return false;
+  dir = {d.x / len, d.y / len, d.z / len};
+  return true;
+}
+
+// First ghost block along the ray within `reach` blocks (voxel walk).
+bool hoveredCell(const Structure &s, const std::array<int, 3> &origin, const View &view, Vec3f eye, Vec3f dir,
+                 std::array<int, 3> &out) {
+  constexpr float reach = 8.0f;
+  int c[3] = {static_cast<int>(std::floor(eye.x)), static_cast<int>(std::floor(eye.y)), static_cast<int>(std::floor(eye.z))};
+  const float p[3] = {eye.x, eye.y, eye.z}, d[3] = {dir.x, dir.y, dir.z};
+  int step[3];
+  float tMax[3], tDelta[3];
+  for (int k = 0; k < 3; ++k) {
+    step[k] = d[k] > 0 ? 1 : -1;
+    tDelta[k] = d[k] != 0 ? std::fabs(1.0f / d[k]) : 1e30f;
+    const float edge = d[k] > 0 ? c[k] + 1 - p[k] : p[k] - c[k];
+    tMax[k] = d[k] != 0 ? edge * tDelta[k] : 1e30f;
+  }
+  for (float t = 0; t <= reach;) {
+    if (expectedAt(s, origin, view, {c[0], c[1], c[2]}) >= 0) {
+      out = {c[0], c[1], c[2]};
+      return true;
+    }
+    const int k = tMax[0] < tMax[1] ? (tMax[0] < tMax[2] ? 0 : 2) : (tMax[1] < tMax[2] ? 1 : 2);
+    t = tMax[k];
+    tMax[k] += tDelta[k];
+    c[k] += step[k];
+  }
+  return false;
+}
+
+// Corner brackets around the hovered ghost block, gently breathing outward. Thin flat strips (both sides) on each face.
+void drawHover(void *sc, void *tess, void *mat, const std::array<int, 3> &cell, const Vec3f &cam) {
+  static const auto start = std::chrono::steady_clock::now();
+  const float secs = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
+  const float pulse = 0.5f + 0.5f * std::sin(secs * 6.2832f);
+  const float gap = 0.02f + 0.05f * pulse, size = 1 + 2 * gap;
+  const float len = (0.22f + 0.05f * pulse) / size, width = 0.06f / size;
+  static constexpr float kFace[6][4][3] = {  // origin, U, V, outward normal (unit cube)
+      {{0, 0, 0}, {1, 0, 0}, {0, 0, 1}, {0, -1, 0}}, {{0, 1, 0}, {1, 0, 0}, {0, 0, 1}, {0, 1, 0}},
+      {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, -1}}, {{0, 0, 1}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}},
+      {{0, 0, 0}, {0, 0, 1}, {0, 1, 0}, {-1, 0, 0}}, {{1, 0, 0}, {0, 0, 1}, {0, 1, 0}, {1, 0, 0}}};
+  const float base[3] = {cell[0] - gap - cam.x, cell[1] - gap - cam.y, cell[2] - gap - cam.z};
+  auto at = [&](const float (*f)[3], float a, float b) {
+    return Vec3f{base[0] + size * (f[0][0] + a * f[1][0] + b * f[2][0]), base[1] + size * (f[0][1] + a * f[1][1] + b * f[2][1]),
+                 base[2] + size * (f[0][2] + a * f[1][2] + b * f[2][2])};
+  };
+  gBegin(tess, nullptr, QuadList, 6 * 4 * 2 * 2 * 4, 0);
+  gColor(tess, 0.38f, 0.44f, 0.91f, 0.95f);
+  auto rect = [&](const float (*f)[3], float a0, float b0, float a1, float b1) {
+    const Vec3f q[4] = {at(f, a0, b0), at(f, a1, b0), at(f, a1, b1), at(f, a0, b1)};
+    for (int k = 0; k < 4; ++k) gVertex(tess, q[k].x, q[k].y, q[k].z);
+    for (int k = 3; k >= 0; --k) gVertex(tess, q[k].x, q[k].y, q[k].z);
+  };
+  for (const auto &f : kFace)
+    for (int cu = 0; cu < 2; ++cu)
+      for (int cv = 0; cv < 2; ++cv) {
+        const float a = cu, b = cv, da = cu ? -1.0f : 1.0f, db = cv ? -1.0f : 1.0f;
+        rect(f, std::min(a, a + da * len), std::min(b, b + db * width), std::max(a, a + da * len), std::max(b, b + db * width));
+        rect(f, std::min(a, a + da * width), std::min(b, b + db * len), std::max(a, a + da * width), std::max(b, b + db * len));
+      }
+  submit(sc, tess, mat);
+}
+
 void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject) {
   // The game can enter the detour before hook() has stored the original on the install thread.
   RenderLevelFn orig;
@@ -187,6 +301,19 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
   if (haveLine) {
     drawLines(screenContext, tess, lineMat, mesh->lines, cam);
     if (gOutlines.load(std::memory_order_relaxed)) drawLines(screenContext, tess, lineMat, mesh->blockLines, cam);
+  }
+  if (haveFace) {
+    std::shared_ptr<const Structure> structure;
+    std::array<int, 3> origin;
+    View view;
+    {
+      std::lock_guard lock(gMu);
+      structure = gStructure, origin = gOrigin, view = gView;
+    }
+    Vec3f eye, dir;
+    std::array<int, 3> cell;
+    if (structure && aimRay(static_cast<const char *>(self), eye, dir) && hoveredCell(*structure, origin, view, eye, dir, cell))
+      drawHover(screenContext, tess, faceMat, cell, cam);
   }
 
   std::memcpy(tessOffset, savedOffset, sizeof(savedOffset));
