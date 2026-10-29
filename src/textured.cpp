@@ -30,6 +30,8 @@ using namespace game;
 
 constexpr size_t kMaxBlocksPerFrame = 4096;  // the block tessellator runs every frame until meshes are cached
 constexpr size_t kBatch = 256;
+// Off until the heap corruption it caused on device (2026-10-29: scudo header corruption in game code) is fixed.
+constexpr bool kAllowed = false;
 
 std::atomic_bool gEnabled{false};
 std::atomic_bool gReady{false};
@@ -145,6 +147,7 @@ uintptr_t decodeAdrpAdd(uintptr_t at) {
 }  // namespace
 
 void install(pl::log::Logger &log) {
+  if (!kAllowed) return;  // no hooks at all while disabled
   struct Want {
     const char *name, *sig;
     void **out;
@@ -193,7 +196,7 @@ void uninstall() {
   gReady = false;
 }
 
-void setEnabled(bool on) { gEnabled = on; }
+void setEnabled(bool on) { gEnabled = on && kAllowed; }
 bool enabled() { return gEnabled && gReady; }
 
 // Which game texture holds the block atlas moves between versions and could not be pinned down statically, so every
