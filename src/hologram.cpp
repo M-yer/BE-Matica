@@ -322,7 +322,7 @@ bool placedAt(int x, int y, int z) {
 
 // First ghost block along the ray within `reach` blocks (voxel walk).
 bool hoveredCell(const Structure &s, const std::array<int, 3> &origin, const View &view, Vec3f eye, Vec3f dir,
-                 std::array<int, 3> &out) {
+                 std::array<int, 3> &out, float *entry = nullptr) {
   constexpr float reach = 8.0f;
   int c[3] = {static_cast<int>(std::floor(eye.x)), static_cast<int>(std::floor(eye.y)), static_cast<int>(std::floor(eye.z))};
   const float p[3] = {eye.x, eye.y, eye.z}, d[3] = {dir.x, dir.y, dir.z};
@@ -337,6 +337,7 @@ bool hoveredCell(const Structure &s, const std::array<int, 3> &origin, const Vie
   for (float t = 0; t <= reach;) {
     if (expectedAt(s, origin, view, {c[0], c[1], c[2]}) >= 0 && !placedAt(c[0], c[1], c[2])) {
       out = {c[0], c[1], c[2]};
+      if (entry) *entry = t;
       return true;
     }
     const int k = tMax[0] < tMax[1] ? (tMax[0] < tMax[2] ? 0 : 2) : (tMax[1] < tMax[2] ? 1 : 2);
@@ -345,6 +346,26 @@ bool hoveredCell(const Structure &s, const std::array<int, 3> &origin, const Vie
     c[k] += step[k];
   }
   return false;
+}
+
+// Entry distance where the aim ray enters a world block's unit cube.
+bool rayBlockEntry(Vec3f eye, Vec3f dir, const BlockPos &pos, float &entry) {
+  float near = 0.0f, far = 1e30f;
+  const float min[3] = {static_cast<float>(pos.x), static_cast<float>(pos.y), static_cast<float>(pos.z)};
+  const float max[3] = {min[0] + 1.0f, min[1] + 1.0f, min[2] + 1.0f};
+  const float origin[3] = {eye.x, eye.y, eye.z}, direction[3] = {dir.x, dir.y, dir.z};
+  for (int k = 0; k < 3; ++k) {
+    if (std::fabs(direction[k]) < 1e-6f) {
+      if (origin[k] < min[k] || origin[k] > max[k]) return false;
+      continue;
+    }
+    float a = (min[k] - origin[k]) / direction[k], b = (max[k] - origin[k]) / direction[k];
+    if (a > b) std::swap(a, b);
+    near = std::max(near, a), far = std::min(far, b);
+    if (near > far) return false;
+  }
+  entry = near;
+  return far >= 0.0f;
 }
 
 // Corner brackets around the hovered ghost block, gently breathing outward. Thin flat strips (both sides) on each face.
@@ -453,13 +474,11 @@ bool hoveredGhost(bool aimed, Vec3f eye, Vec3f dir, int32_t hitType, const Block
     std::lock_guard lock(gMu);
     structure = gStructure, origin = gOrigin, view = gView;
   }
-  if (!structure || !hoveredCell(*structure, origin, view, eye, dir, cell)) return false;
+  float ghostEntry = 0.0f;
+  if (!structure || !hoveredCell(*structure, origin, view, eye, dir, cell, &ghostEntry)) return false;
   if (hitType != 0) return true;
-  const auto dist2 = [&](int x, int y, int z) {
-    const float dx = x + 0.5f - eye.x, dy = y + 0.5f - eye.y, dz = z + 0.5f - eye.z;
-    return dx * dx + dy * dy + dz * dz;
-  };
-  return dist2(cell[0], cell[1], cell[2]) <= dist2(hitPos.x, hitPos.y, hitPos.z);
+  float worldEntry = 0.0f;
+  return rayBlockEntry(eye, dir, hitPos, worldEntry) && ghostEntry <= worldEntry + 1e-4f;
 }
 
 // Looks at the block under the crosshair and publishes what it is when that or the structure's wish for the cell
@@ -501,9 +520,12 @@ void updateLook(const char *levelRenderer, bool aimed, int32_t hitType, const Bl
     if (key.palette >= 0) {
       const std::string &want = structure->palette[key.palette].name;
       const std::string world = key.type ? blockName(key.type) : std::string();
-      const bool wrong = !world.empty() && world != "minecraft:air" && typeOf(want) != key.type;
+      const uintptr_t air = typeOf("minecraft:air");
+      const bool isAir = world == "minecraft:air" || (air != 0 && key.type == air);
+      const bool wrong = key.type != 0 && !isAir && typeOf(want) != key.type;
       info.valid = true, info.inside = true, info.name = displayName(want);
       info.note = wrong ? "Wrong block: " + displayName(world) : "Not placed";
+      if (gLog) gLog->info("BE-Matica: WAILA ghost '{}' -> {}", want, info.note);
     }
   } else if (key.valid) {
     std::string id = blockName(key.type);
