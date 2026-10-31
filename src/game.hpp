@@ -94,6 +94,33 @@ constexpr const char *BlockStateByName =
     "FD 7B BF A9 FD 03 00 91 E1 03 00 AA C0 AD 01 F0 00 00 32 91 0B 99 00 94 40 00 00 B4 00 1C 40 F9 FD 7B C1 A8 C0 03 "
     "5F D6";
 
+// Player-direction placement: BlockType vtable slot 0x280, `const Block* getPlacementBlock(const Actor& by, const BlockPos&,
+// uchar face, const Vec3& click, int itemValue)`, called on the server thread by the block-item placement code.
+// The base implementation (used by chest, furnace, smoker, blast furnace, campfire, lectern...) runs the block's trait
+// callbacks (BlockTrait::PlacementDirection::UpdateCardinalGetPlacementBlockCallback) that read the actor's yaw.
+constexpr const char *PlacementBase =
+    "FD 7B BC A9 F8 5F 01 A9 F6 57 02 A9 F4 4F 03 A9 FD 03 00 91 F6 03 01 AA E1 03 05 2A F3 03 04 AA F4 03 03 2A F5 03 "
+    "02 AA F7 03 00 AA ? ? ? ? E8 02 41 F9 1F 00 00 F1 01 01 80 9A ? ? ? ? F8 06 41 F9 F7 0A 41 F9";
+// BarrelBlock's own override (default block + facing from the actor via Direction helpers). Its body is duplicated by
+// another class, so the signature starts in the code before it; PlacementBarrelOffset is the distance to the function.
+constexpr const char *PlacementBarrel =
+    "74 1E 00 12 ? ? ? ? 09 1C 40 92 CA 00 80 52 9F 16 00 71 68 00 80 52 ? ? ? ? ? ? ? ? 29 2D AA 9B 08 81 93 1A 08 1D "
+    "40 92 20 69 68 38 F4 4F 41 A9 FD 7B C2 A8 C0 03 5F D6 FD 7B BE A9 F4 4F 01 A9 FD 03 00 91 F3 03 01 2A 01 A0 4E 39 "
+    "E0 03 02 AA 74 1E 00 12 ? ? ? ? 09 1C 40 92 CA 00 80 52 9F 16 00 71 68 00 80 52 ? ? ? ? ? ? ? ? 29 2D AA 9B 08 81 "
+    "93 1A 08 1D 40 92 20 69 68 38 F4 4F 41 A9 FD 7B C2 A8 C0 03 5F D6 FD 7B BD A9 F5 0B 00 F9 F4 4F 02 A9 FD 03 00 91 "
+    "F4 03 02 AA F5 03 01 AA F3 03 00 AA ? ? ? ? 68 A2 4E 39 60 AE 43 BD F3 03 00 AA E0 03 15 AA E1 03 14 AA ? ? ? ? ? "
+    "? ? ? 74 36 40 F9 ? ? ? ? ? ? ? ? 0A 1C 40 92 ? ? ? ? 63 52 42 79 88 DA 40 F9 22 69 6A 38 61 25 43 F9";
+constexpr uintptr_t PlacementBarrelOffset = 144;
+// DispenserBlock's override, shared by the dropper.
+constexpr const char *PlacementDispenser =
+    "FD 7B BD A9 F5 0B 00 F9 F4 4F 02 A9 FD 03 00 91 00 E4 00 2F F3 03 00 AA E0 03 01 AA E1 03 02 AA ? ? ? ? F5 03 00 "
+    "2A E0 03 13 AA ? ? ? ? 14 34 40 F9 ? ? ? ? 03 50 42 79 01 C9 46 F9 F3 03 00 AA 89 DA 40 F9 ? ? ? ? 8A C2 06 91 "
+    "0B 01 80 52 E8 03 0A AA 2C 11 40 F9 9F 01 01 EB 6C 31 9F 9A 08 31 89 9A 29 69 6C F8 ? ? ? ? 1F 01 0A EB ? ? ? ? "
+    "09 11 40 F9 3F 00 09 EB ? ? ? ? A2 1E 00 12 E0 03 14 AA ? ? ? ? ? ? ? ? F4 4F 42 A9 F5 0B 40 F9 FD 7B C3 A8 C0 "
+    "03 5F D6 88 CE 04 91 89 D6 44 39 08 01 40 79 08 41 09 2A ? ? ? ? E0 03 14 AA F4 4F 42 A9 F5 0B 40 F9 FD 7B C3 A8 "
+    "? ? ? ? 00 A1 00 91 A2 1E 00 12 E1 03 03 2A 83 A2 07 91 ? ? ? ? ? ? ? ? E0 03 13 AA F4 4F 42 A9 F5 0B 40 F9 FD "
+    "7B C3 A8 C0 03 5F D6 FD 7B BD A9 F5 0B 00 F9";
+
 // Textured hologram (experimental)
 // BlockTessellator::BlockTessellator(BlockSource*) — the object is kBlockTessellatorSize bytes
 constexpr const char *BlockTessellatorCtor =
@@ -212,6 +239,8 @@ struct BlockChangeContext {
 };
 using BlockChangeContextFn = BlockChangeContext (*)(uint32_t sourceId);
 using BlockStateByNameFn = void *(*)(const HashedString &name);
+using PlacementFn = const void *(*)(void *blockType, void *actor, const BlockPos *pos, uint8_t face, const void *click,
+                                    int itemValue);
 using SetBlockFn = bool (*)(void *blockSource, const BlockPos *pos, const void *block, int flags, const void *sync,
                             const void *context);
 

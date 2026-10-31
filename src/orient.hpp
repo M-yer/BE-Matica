@@ -168,4 +168,25 @@ inline int clickFace(std::string_view block, std::string_view key, const StateVa
   return -1;
 }
 
+// Block entities whose facing the server derives from the placing player's yaw (not from the clicked face), and which of
+// the game's getPlacementBlock implementations decides it: 1 the base one (block traits), 2 BarrelBlock's, 4 the
+// dispenser/dropper one; 0 for every other block.
+inline int placementHook(std::string_view block) {
+  constexpr std::string_view prefix = "minecraft:";
+  if (block.substr(0, prefix.size()) == prefix) block.remove_prefix(prefix.size());
+  if (block == "barrel") return 2;
+  if (block == "dispenser" || block == "dropper") return 4;
+  for (const std::string_view b : {"chest", "trapped_chest", "ender_chest", "furnace", "blast_furnace", "smoker", "lectern",
+                                   "campfire", "soul_campfire"})
+    if (block == b) return 1;
+  return 0;
+}
+
+// The states a player-direction placement fills in from the player's yaw.
+inline bool isDirectionKey(std::string_view key) {
+  constexpr std::string_view prefix = "minecraft:";
+  if (key.substr(0, prefix.size()) == prefix) key.remove_prefix(prefix.size());
+  return key == "cardinal_direction" || key == "facing_direction" || key == "direction" || key == "weirdo_direction";
+}
+
 }  // namespace bematica::orient
