@@ -76,7 +76,7 @@ void LookCard::update(const hologram::LookInfo &info) {
     const float sh = surface.height > 0 ? surface.height : 1080, sw = surface.width > 0 ? surface.width : 2400;
     // Two lines still fit under the launcher's toolbar and above the toast (18%): the card stays under 8% of the height.
     const float font = sh * 0.02f, pad = font * 0.6f, lineH = font * 1.35f;
-    const std::string wants = info.match ? "Wants: " + info.want + " ✓" : "Wants: " + info.want;
+    const std::string wants = !info.note.empty() ? info.note : info.match ? "Wants: " + info.want + " ✓" : "Wants: " + info.want;
     float w = textWidth(info.name, font);
     if (info.inside) w = std::max(w, textWidth(wants, font));
     w += font * 1.6f;

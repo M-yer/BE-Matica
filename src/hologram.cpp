@@ -74,6 +74,8 @@ struct LookKey {
   uintptr_t type = 0;  // untagged BlockType under the crosshair
   std::shared_ptr<const Structure> structure;
   int32_t palette = -1;  // the structure's palette index for that cell, -1 when it wants nothing there
+  bool ghost = false;    // the crosshair is on an unplaced ghost block at `cell`; `type` is then the world's block there
+  std::array<int, 3> cell{};
   bool operator==(const LookKey &o) const = default;
 };
 LookKey gLookKey;
@@ -430,9 +432,40 @@ std::string displayName(const std::string &id) {
   return out;
 }
 
+// The world's BlockType at a cell, untagged. 0 when it can't be read.
+uintptr_t worldType(void *source, const std::array<int, 3> &cell) {
+  if (!source) return 0;
+  const void *block = gGetBlock(source, BlockPos{cell[0], cell[1], cell[2]});
+  const void *type = nullptr;
+  if (block && safeRead(static_cast<const char *>(block) + off::Block_blockType, &type, 8) && type)
+    return reinterpret_cast<uintptr_t>(type) & 0x00FFFFFFFFFFFFFFULL;
+  return 0;
+}
+
+// The ghost cell under the crosshair, unless the world block the game hits is nearer along the ray (a real block
+// in front of a ghost hides it).
+bool hoveredGhost(bool aimed, Vec3f eye, Vec3f dir, int32_t hitType, const BlockPos &hitPos, std::array<int, 3> &cell) {
+  if (!aimed) return false;
+  std::shared_ptr<const Structure> structure;
+  std::array<int, 3> origin;
+  View view;
+  {
+    std::lock_guard lock(gMu);
+    structure = gStructure, origin = gOrigin, view = gView;
+  }
+  if (!structure || !hoveredCell(*structure, origin, view, eye, dir, cell)) return false;
+  if (hitType != 0) return true;
+  const auto dist2 = [&](int x, int y, int z) {
+    const float dx = x + 0.5f - eye.x, dy = y + 0.5f - eye.y, dz = z + 0.5f - eye.z;
+    return dx * dx + dy * dy + dz * dz;
+  };
+  return dist2(cell[0], cell[1], cell[2]) <= dist2(hitPos.x, hitPos.y, hitPos.z);
+}
+
 // Looks at the block under the crosshair and publishes what it is when that or the structure's wish for the cell
 // changes. The world read happens every frame, the name and the listener call only on a change.
-void updateLook(const char *levelRenderer, bool aimed, int32_t hitType, const BlockPos &pos) {
+void updateLook(const char *levelRenderer, bool aimed, int32_t hitType, const BlockPos &pos, bool hovering,
+                const std::array<int, 3> &ghost) {
   std::shared_ptr<const Structure> structure;
   std::array<int, 3> origin;
   View view;
@@ -445,7 +478,11 @@ void updateLook(const char *levelRenderer, bool aimed, int32_t hitType, const Bl
   LookKey key;
   key.structure = structure;
   void *source = blockSource(levelRenderer);
-  if (aimed && hitType == 0 && source) {
+  if (hovering && structure) {
+    key.valid = true, key.ghost = true, key.cell = ghost;
+    key.type = worldType(source, ghost);
+    key.palette = expectedAt(*structure, origin, view, ghost);
+  } else if (aimed && hitType == 0 && source) {
     const void *block = gGetBlock(source, pos);
     const void *type = nullptr;
     if (block && safeRead(static_cast<const char *>(block) + off::Block_blockType, &type, 8) && type) {
@@ -460,7 +497,15 @@ void updateLook(const char *levelRenderer, bool aimed, int32_t hitType, const Bl
     gLookKey = key;
   }
   LookInfo info;
-  if (key.valid) {
+  if (key.ghost) {
+    if (key.palette >= 0) {
+      const std::string &want = structure->palette[key.palette].name;
+      const std::string world = key.type ? blockName(key.type) : std::string();
+      const bool wrong = !world.empty() && world != "minecraft:air" && typeOf(want) != key.type;
+      info.valid = true, info.inside = true, info.name = displayName(want);
+      info.note = wrong ? "Wrong block: " + displayName(world) : "Not placed";
+    }
+  } else if (key.valid) {
     std::string id = blockName(key.type);
     if (id.empty() && structure)  // no name in the game's block: match the structure's names instead
       for (const auto &p : structure->palette)
@@ -516,7 +561,9 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
   int32_t hitType = -1;
   BlockPos hitPos{};
   const bool aimed = aimRay(static_cast<const char *>(self), eye, dir, hitType, hitPos);
-  updateLook(static_cast<const char *>(self), aimed, hitType, hitPos);
+  std::array<int, 3> ghost{};
+  const bool hovering = hoveredGhost(aimed, eye, dir, hitType, hitPos, ghost);
+  updateLook(static_cast<const char *>(self), aimed, hitType, hitPos, hovering, ghost);
   if (!mesh) return;
 
   // Materials are owned by the game; a MaterialPtr is "set" when its first word is non-null.
@@ -564,21 +611,12 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
     if (structure) refreshPlaced(static_cast<const char *>(self), *structure);
   }
   if (haveFace) {
-    std::shared_ptr<const Structure> structure;
-    std::array<int, 3> origin;
-    View view;
-    {
-      std::lock_guard lock(gMu);
-      structure = gStructure, origin = gOrigin, view = gView;
-    }
-    std::array<int, 3> cell;
     if (aimed && (dir.x != 0 || dir.z != 0)) {
       std::lock_guard lock(gMu);
       gForward = std::fabs(dir.x) > std::fabs(dir.z) ? std::array<int, 2>{dir.x > 0 ? 1 : -1, 0}
                                                      : std::array<int, 2>{0, dir.z > 0 ? 1 : -1};
     }
-    if (structure && aimed && hoveredCell(*structure, origin, view, eye, dir, cell))
-      drawHover(screenContext, tess, faceMat, cell, cam);
+    if (hovering) drawHover(screenContext, tess, faceMat, ghost, cam);
   }
 
   std::memcpy(tessOffset, savedOffset, sizeof(savedOffset));

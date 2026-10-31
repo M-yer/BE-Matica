@@ -45,6 +45,7 @@ struct LookInfo {
   std::string name;    // display name of the block under the crosshair ("Air" for air)
   std::string want;
   bool inside = false, match = false;
+  std::string note;  // replaces the "Wants" line: why the ghost block under the crosshair isn't placed
 };
 // Called on the render thread when the block under the crosshair changes. Null turns the reads off.
 void setLookListener(std::function<void(const LookInfo &info)> listener);
