@@ -56,6 +56,14 @@ constexpr const char *ItemStackHasItem =
 constexpr const char *PickBlock =
     "FF C3 02 D1 FD 7B 07 A9 F7 43 00 F9 F6 57 09 A9 F4 4F 0A A9 FD C3 01 91 57 D0 3B D5 E8 16 40 F9 A8 83 1F F8 "
     "28 18 40 B9 08 11 00 51 1F 0D 00 31 ? ? ? ? F4 03 02 2A F5 03 01 AA F6 03 00 AA ? ? ? ? A8 1A 40 B9 F3 03 00 AA 1F 05 00 71";
+// ItemStack::ItemStack(const ItemStack&): copy constructor (0x98-byte object, vtable first)
+constexpr const char *ItemStackCopy =
+    "FD 7B BE A9 F3 0B 00 F9 FD 03 00 91 F3 03 00 AA 08 00 00 94 28 B1 01 D0 08 E1 3F 91 68 06 08 F8 E0 03 13 AA F3 0B "
+    "40 F9 FD 7B C2 A8 29 62 E4 17 FF 43 01 D1";
+// ServerPlayer's override of Player vtable slot 0xC8; runs on the server thread, `this` is the ServerPlayer
+constexpr const char *ServerPlayerTick =
+    "FF 83 03 D1 FD 7B 09 A9 F9 53 00 F9 F8 5F 0B A9 F6 57 0C A9 F4 4F 0D A9 FD 43 02 91 57 D0 3B D5 F3 03 00 AA 00 20 "
+    "00 91 E8 16 40 F9";
 // Returns the global block registry (the getter sits right before BlockLookupByName)
 constexpr const char *BlockRegistry = "? ? ? ? ? ? ? ? C0 03 5F D6 E2 03 1F 2A E3 03 1F 2A E4 03 1F 2A";
 // Looks up a BlockType by its full name (HashedString); old names like minecraft:grass resolve too
@@ -110,6 +118,8 @@ constexpr unsigned Block_blockType = 0x68;
 constexpr unsigned PlayerInventory_selectedSlot = 0x10;
 constexpr unsigned PlayerInventory_container = 0xB8;  // selectSlot reads it for the slot count and getItem
 constexpr unsigned Container_vtGetItem = 0x40;  // vtable byte offset: ItemStack* getItem(int slot)
+constexpr unsigned Container_vtSetItem = 0x68;  // vtable byte offset: setItem(int slot, const ItemStack&); Inventory's is a thunk to setItemWithForceBalance
+constexpr size_t ItemStack_size = 0x98;
 // Textured hologram (1.26.60.4, static RE; see knowledge note 10)
 constexpr unsigned LevelRenderer_clientInstance = 0x3D8;   // RenderLevel: ldr x22,[x0,#0x3d8]; it is ClientInstance (vtable slot 0x278 / BaseActorRenderContext ctor arg)
 constexpr unsigned LevelRenderer_atlasTexture = 0x1B8;     // TexturePtr "atlas.terrain" (written in the LevelRenderer ctor at lib+0xb7936f0)
@@ -158,6 +168,9 @@ using GetBlockFn = void *(*)(void *blockSource, const BlockPos &pos);
 using ItemBlockTypeFn = BlockTypeRef (*)(const void *itemStack);
 using SelectSlotFn = bool (*)(void *playerInventory, int slot, uint8_t containerId);
 using ItemStackHasItemFn = bool (*)(const void *itemStack);
+using ItemStackCopyFn = void *(*)(void *dst, const void *src);
+using ServerTickFn = uint64_t (*)(void *serverPlayer, void *a1, void *a2, void *a3);
+using SetItemFn = void (*)(void *container, int slot, const void *itemStack);
 using PickBlockFn = void (*)(void *player, const void *hitResult, bool withData);
 using HandItemFn = const void *(*)(void *player, uint8_t hand);
 using BlockRegistryFn = void *(*)();
