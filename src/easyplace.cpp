@@ -551,6 +551,12 @@ int runOrient(void *serverPlayer, OrientJob &j) {
       !readPtr(reinterpret_cast<void *>(wanted + off::Block_blockType), wantedType) || wantedType != j.type)
     return done("failed", fmt::format("no permutation {} of {}", index, count));
   if (index == data) return done("ok", "already matches");
+  // The chunk's palette stores Block pointers and finds entries by comparing them whole, tag byte included: setBlock gets
+  // the pointer exactly as the game holds it, never the untagged copy used for our own comparisons.
+  uintptr_t wantedRaw = 0;
+  if (!safeRead(reinterpret_cast<void *>(begin + index * 8), &wantedRaw, 8) || untag(reinterpret_cast<void *>(wantedRaw)) != wanted ||
+      (wantedRaw >> 56) != (reinterpret_cast<uintptr_t>(block) >> 56))
+    return done("failed", "permutation pointer does not carry the same tag as the placed block");
 
   uintptr_t vtable = 0, slot = 0;
   if (!gSetBlock || !gMakeCtx || !readPtr(source, vtable) || !vtable ||
@@ -558,8 +564,8 @@ int runOrient(void *serverPlayer, OrientJob &j) {
       slot != untag(reinterpret_cast<void *>(gSetBlock)))
     return done("failed", "BlockSource::setBlock is not where expected");
   const BlockChangeContext ctx = gMakeCtx(0);
-  const bool set = reinterpret_cast<SetBlockFn>(slot)(source, &j.pos, reinterpret_cast<void *>(wanted), 3, nullptr, &ctx);
-  const bool now = untag(gGetBlock(source, j.pos)) == wanted;
+  const bool set = reinterpret_cast<SetBlockFn>(slot)(source, &j.pos, reinterpret_cast<void *>(wantedRaw), 3, nullptr, &ctx);
+  const bool now = reinterpret_cast<uintptr_t>(gGetBlock(source, j.pos)) == wantedRaw;
   return done(set && now ? "ok" : "failed",
               fmt::format("data {} -> {}", data, index));
 }
@@ -761,6 +767,26 @@ bool afterPlace(const Context &ctx, bool placed) {
   return placed;
 }
 
+// Swapping the permutation of a block-entity block (barrel...) was the only setBlock the device ever ran before the server
+// thread crashed saving that chunk (device log 19:46, see the handoff notes), so those blocks keep their vanilla state until
+// the cause is confirmed on a device. Flip kOrientBlockEntities to test them.
+constexpr bool kOrientBlockEntities = false;
+bool hasBlockEntity(const std::string &n) {
+  if (kOrientBlockEntities) return false;
+  static constexpr std::string_view exact[] = {
+      "barrel", "chest", "trapped_chest", "ender_chest", "furnace", "lit_furnace", "blast_furnace", "lit_blast_furnace",
+      "smoker", "lit_smoker", "hopper", "dropper", "dispenser", "crafter", "brewing_stand", "lectern", "chiseled_bookshelf",
+      "jukebox", "beacon", "enchanting_table", "bed", "command_block", "chain_command_block", "repeating_command_block",
+      "decorated_pot", "daylight_detector", "conduit", "bell", "campfire", "soul_campfire", "end_portal", "end_gateway",
+      "mob_spawner", "trial_spawner", "vault", "structure_block", "jigsaw", "sculk_sensor", "calibrated_sculk_sensor",
+      "sculk_shrieker", "sculk_catalyst", "skull", "comparator", "unpowered_comparator", "powered_comparator", "cauldron"};
+  for (const auto e : exact)
+    if (n == e) return true;
+  for (const std::string_view suffix : {"_sign", "_banner", "shulker_box", "_bed", "_head", "_skull", "_hanging_sign"})
+    if (n.size() >= suffix.size() && n.compare(n.size() - suffix.size(), suffix.size(), suffix) == 0) return true;
+  return false;
+}
+
 // Posts the structure's states for the block just placed at `cell`. Doors are two blocks: the cell above is posted too.
 void queueOrient(const Context &ctx, const Cell &cell, bool upperDone = false) {
   if (!gSetBlock || !gMakeCtx || !gStateByName || !gServerTickOrig.load(std::memory_order_acquire)) return;
@@ -788,6 +814,10 @@ void queueOrient(const Context &ctx, const Cell &cell, bool upperDone = false) {
   }
   if (ctx.h.view.rotation != 0 || ctx.h.view.mirror) {
     trace("EasyPlace: orient {} {} -> skipped (rotated view)", shortName(bs.name), job.desc);
+    return;
+  }
+  if (hasBlockEntity(shortName(bs.name))) {
+    trace("EasyPlace: orient {} {} -> skipped (block entity)", shortName(bs.name), job.desc);
     return;
   }
   job.type = untag(blockTypeOf(bs.name));
