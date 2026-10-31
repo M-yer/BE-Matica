@@ -65,6 +65,12 @@ constexpr const char *ItemStackCopy =
 constexpr const char *ItemStackFromBlock =
     "FD 7B BE A9 F3 0B 00 F9 FD 03 00 91 F3 03 00 AA AD F7 FF 97 ? ? ? ? ? ? ? ? 68 06 08 F8 E0 03 13 AA F3 0B 40 F9 FD "
     "7B C2 A8 4D 62 E4 17";
+// ItemStack::ItemStack(string_view name, int count, int aux, const CompoundTag*): constructs in place (0x98 bytes) the
+// stack of the item registered under a full name ("minecraft:spruce_door"). Doors, buckets and seeds are not block items,
+// so the Block ctor above yields an empty stack for them. The bl is kept exact, like in the Block ctor.
+constexpr const char *ItemStackFromName =
+    "FD 7B BE A9 F3 0B 00 F9 FD 03 00 91 F3 03 00 AA 5B F8 FF 97 ? ? ? ? ? ? ? ? 68 06 08 F8 E0 03 13 AA F3 0B 40 F9 FD "
+    "7B C2 A8 35 62 E4 17";
 // ServerPlayer's override of Player vtable slot 0xC8; runs on the server thread, `this` is the ServerPlayer
 constexpr const char *ServerPlayerTick =
     "FF 83 03 D1 FD 7B 09 A9 F9 53 00 F9 F8 5F 0B A9 F6 57 0C A9 F4 4F 0D A9 FD 43 02 91 57 D0 3B D5 F3 03 00 AA 00 20 "
@@ -147,6 +153,7 @@ constexpr unsigned PlayerInventory_container = 0xB8;  // selectSlot reads it for
 constexpr unsigned Container_vtGetItem = 0x40;  // vtable byte offset: ItemStack* getItem(int slot)
 constexpr unsigned Container_vtSetItem = 0x68;  // vtable byte offset: setItem(int slot, const ItemStack&); Inventory's is a thunk to setItemWithForceBalance
 constexpr size_t ItemStack_size = 0x98;
+constexpr unsigned ItemStack_item = 0x8;  // ItemStackBase: pointer to a holder whose first word is the Item*
 // Textured hologram (1.26.60.4, static RE; see knowledge note 10)
 constexpr unsigned LevelRenderer_clientInstance = 0x3D8;   // RenderLevel: ldr x22,[x0,#0x3d8]; it is ClientInstance (vtable slot 0x278 / BaseActorRenderContext ctor arg)
 constexpr unsigned LevelRenderer_atlasTexture = 0x1B8;     // TexturePtr "atlas.terrain" (written in the LevelRenderer ctor at lib+0xb7936f0)
@@ -197,6 +204,7 @@ using SelectSlotFn = bool (*)(void *playerInventory, int slot, uint8_t container
 using ItemStackHasItemFn = bool (*)(const void *itemStack);
 using ItemStackCopyFn = void *(*)(void *dst, const void *src);
 using ItemStackFromBlockFn = void *(*)(void *dst, const void *block, int count, const void *tag);
+using ItemStackFromNameFn = void *(*)(void *dst, const char *name, size_t len, int count, int aux, const void *tag);
 using ServerTickFn = uint64_t (*)(void *serverPlayer, void *a1, void *a2, void *a3);
 using SetItemFn = void (*)(void *container, int slot, const void *itemStack);
 using PlayerGameTypeFn = int (*)(void *player);
