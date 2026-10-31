@@ -48,6 +48,14 @@ constexpr const char *HandItem = "28 1C 00 12 1F 05 00 71 ? ? ? ? 08 00 40 F9 01
 constexpr const char *SelectSlot =
     "FD 7B BB A9 FC 67 01 A9 F8 5F 02 A9 F6 57 03 A9 F4 4F 04 A9 FD 03 00 91 FF C3 09 D1 56 D0 3B D5 C8 16 40 F9 5F 1C 00 "
     "72 A8 83 1F F8 60 00 00 54";
+// ItemStack::hasItem: distinguishes an empty stack from a non-block item.
+constexpr const char *ItemStackHasItem =
+    "08 04 40 F9 48 01 00 B4 00 01 40 F9 E0 00 00 B4 FD 7B BF A9 FD 03 00 91 ? ? ? ? 1F 00 00 F1 E0 07 9F 1A "
+    "FD 7B C1 A8 C0 03 5F D6";
+// Player::pick(const HitResult&, bool): builds the native picked ItemStack and sends BlockPickRequest.
+constexpr const char *PickBlock =
+    "FF C3 02 D1 FD 7B 07 A9 F7 43 00 F9 F6 57 09 A9 F4 4F 0A A9 FD C3 01 91 57 D0 3B D5 E8 16 40 F9 A8 83 1F F8 "
+    "28 18 40 B9 08 11 00 51 1F 0D 00 31 ? ? ? ? F4 03 02 2A F5 03 01 AA F6 03 00 AA ? ? ? ? A8 1A 40 B9 F3 03 00 AA 1F 05 00 71";
 // Returns the global block registry (the getter sits right before BlockLookupByName)
 constexpr const char *BlockRegistry = "? ? ? ? ? ? ? ? C0 03 5F D6 E2 03 1F 2A E3 03 1F 2A E4 03 1F 2A";
 // Looks up a BlockType by its full name (HashedString); old names like minecraft:grass resolve too
@@ -88,6 +96,7 @@ constexpr unsigned Level_vtGetHitResult = 0xA80; // vtable byte offset
 constexpr unsigned HitResult_rayStart = 0x0, HitResult_rayDir = 0xC;  // Vec3 each: the player's aim ray
 constexpr unsigned HitResult_type = 0x18, HitResult_face = 0x1C, HitResult_pos = 0x20, HitResult_hitPos = 0x2C;
 constexpr unsigned Block_blockType = 0x68;
+constexpr unsigned PlayerInventory_selectedSlot = 0x10;
 constexpr unsigned PlayerInventory_container = 0xB8;  // selectSlot reads it for the slot count and getItem
 constexpr unsigned Container_vtGetItem = 0x40;  // vtable byte offset: ItemStack* getItem(int slot)
 }  // namespace off
@@ -124,6 +133,8 @@ using UseItemFn = bool (*)(void *gameMode, void *itemStack, uint32_t flag);
 using GetBlockFn = void *(*)(void *blockSource, const BlockPos &pos);
 using ItemBlockTypeFn = BlockTypeRef (*)(const void *itemStack);
 using SelectSlotFn = bool (*)(void *playerInventory, int slot, uint8_t containerId);
+using ItemStackHasItemFn = bool (*)(const void *itemStack);
+using PickBlockFn = void (*)(void *player, const void *hitResult, bool withData);
 using HandItemFn = const void *(*)(void *player, uint8_t hand);
 using BlockRegistryFn = void *(*)();
 using BlockLookupFn = void *(*)(void *registry, const HashedString *name);

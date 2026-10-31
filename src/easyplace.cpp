@@ -33,6 +33,8 @@ GetBlockFn gGetBlock = nullptr;
 ItemBlockTypeFn gItemBlockType = nullptr;
 HandItemFn gHandItem = nullptr;
 SelectSlotFn gSelectSlot = nullptr;
+ItemStackHasItemFn gItemStackHasItem = nullptr;
+PickBlockFn gPickBlock = nullptr;
 BlockRegistryFn gRegistry = nullptr;
 BlockLookupFn gLookup = nullptr;
 
@@ -286,23 +288,42 @@ bool wantsLiquid(const Context &ctx, const Cell &target) {
   return want.find("water") != std::string::npos || want.find("lava") != std::string::npos;
 }
 
+struct InventoryView {
+  void *inventory = nullptr;
+  void *container = nullptr;
+  using GetItemFn = const void *(*)(void *, int);
+  GetItemFn getItem = nullptr;
+};
+
+bool inventoryView(void *player, InventoryView &out) {
+  const int field = fields(player).inventory;
+  if (field < 0 || !safeRead(static_cast<char *>(player) + field, &out.inventory, 8) || !out.inventory ||
+      className(out.inventory) != "PlayerInventory")
+    return false;
+  void *vtable = nullptr, *getItemPtr = nullptr;
+  if (!safeRead(static_cast<char *>(out.inventory) + off::PlayerInventory_container, &out.container, 8) ||
+      !out.container || className(out.container).empty() || !safeRead(out.container, &vtable, 8) || !vtable ||
+      !safeRead(static_cast<char *>(vtable) + off::Container_vtGetItem, &getItemPtr, 8) || !getItemPtr)
+    return false;
+  out.getItem = reinterpret_cast<InventoryView::GetItemFn>(getItemPtr);
+  return true;
+}
+
+const void *itemAt(const InventoryView &view, int slot) { return view.getItem(view.container, slot); }
+
+bool stackHasItem(const void *stack) { return stack && gItemStackHasItem && gItemStackHasItem(stack); }
+
+bool stackHasType(const void *stack, const void *expected) {
+  const void *type = stack ? gItemBlockType(stack).blockType : nullptr;
+  return type && untag(type) == untag(expected);
+}
+
 // The hotbar slot (0-8) holding `expected`, or -1. Reads go through the inventory's own container.
 int hotbarSlotWith(void *player, const void *expected) {
-  const int field = fields(player).inventory;
-  void *inventory = field >= 0 ? at<void *>(player, field) : nullptr;
-  if (!inventory || className(inventory) != "PlayerInventory") return -1;
-  void *container = nullptr, *vtable = nullptr, *getItemPtr = nullptr;
-  if (!safeRead(static_cast<char *>(inventory) + off::PlayerInventory_container, &container, 8) || !container ||
-      className(container).empty() || !safeRead(container, &vtable, 8) || !vtable ||
-      !safeRead(static_cast<char *>(vtable) + off::Container_vtGetItem, &getItemPtr, 8) || !getItemPtr)
-    return -1;
-  using GetItemFn = const void *(*)(void *, int);
-  auto getItem = reinterpret_cast<GetItemFn>(getItemPtr);
-  for (int slot = 0; slot < 9; ++slot) {
-    const void *stack = getItem(container, slot);
-    const void *type = stack ? gItemBlockType(stack).blockType : nullptr;
-    if (type && untag(type) == untag(expected)) return slot;
-  }
+  InventoryView view;
+  if (!inventoryView(player, view)) return -1;
+  for (int slot = 0; slot < 9; ++slot)
+    if (stackHasType(itemAt(view, slot), expected)) return slot;
   return -1;
 }
 
@@ -311,9 +332,84 @@ bool selectFromHotbar(void *player, const void *expected) {
   if (!gSelectSlot) return false;
   const int slot = hotbarSlotWith(player, expected);
   if (slot < 0) return false;
-  void *inventory = at<void *>(player, fields(player).inventory);
+  InventoryView view;
+  if (!inventoryView(player, view)) return false;
+  void *inventory = view.inventory;
   const bool ok = gSelectSlot(inventory, slot, 0);
   trace("EasyPlace: auto-select hotbar slot {} -> {}", slot, ok ? "ok" : "rejected");
+  return ok;
+}
+
+bool pickSource(const World &world, const Vec3f &eye, const void *expected, BlockPos &out) {
+  if (!gGetBlock) return false;
+  const Cell center{static_cast<int>(std::floor(eye.x)), static_cast<int>(std::floor(eye.y)),
+                    static_cast<int>(std::floor(eye.z))};
+  constexpr int radius = 6;
+  for (int y = -radius; y <= radius; ++y)
+    for (int z = -radius; z <= radius; ++z)
+      for (int x = -radius; x <= radius; ++x) {
+        if (x * x + y * y + z * z > radius * radius) continue;
+        const BlockPos pos{center[0] + x, center[1] + y, center[2] + z};
+        void *block = gGetBlock(world.blockSource, pos);
+        void *type = nullptr;
+        if (!block || !safeRead(static_cast<char *>(block) + off::Block_blockType, &type, 8) ||
+            !type || untag(type) != untag(expected))
+          continue;
+        out = pos;
+        return true;
+      }
+  return false;
+}
+
+bool autoPick(const Context &ctx, const void *expected, const std::string &want) {
+  constexpr std::string_view method = "BlockPickRequest";
+  const auto failed = [&] {
+    trace("EasyPlace: auto-pick {} via {} -> failed", shortName(want), method);
+    return false;
+  };
+  if (!gPickBlock || !gSelectSlot || !gItemStackHasItem) return failed();
+  InventoryView view;
+  if (!inventoryView(ctx.player, view)) return failed();
+
+  int empty = -1;
+  for (int slot = 0; slot < 9; ++slot)
+    if (!stackHasItem(itemAt(view, slot))) {
+      empty = slot;
+      break;
+    }
+  int selected = -1;
+  if (empty < 0) {
+    if (!safeRead(static_cast<char *>(view.inventory) + off::PlayerInventory_selectedSlot, &selected, sizeof(selected)) ||
+        selected < 0 || selected >= 9)
+      return failed();
+    bool inMain = false;
+    for (int slot = 9; slot < 36; ++slot)
+      if (stackHasType(itemAt(view, slot), expected)) {
+        inMain = true;
+        break;
+      }
+    // A survival item in the main inventory must be moved only into an empty hotbar slot.
+    // With no such slot, the only safe native path is creative pick-block into the selected slot.
+    if (inMain) return failed();
+  } else {
+    selected = empty;
+  }
+
+  BlockPos source{};
+  if (!pickSource(ctx.world, ctx.eye, expected, source)) return failed();
+  if (empty >= 0 && !gSelectSlot(view.inventory, empty, 0)) return failed();
+  struct PickHit {
+    Vec3f rayStart;
+    Vec3f rayDir;
+    int type;
+    int face;
+    BlockPos pos;
+    Vec3f hitPos;
+  } hit{ctx.eye, ctx.dir, 0, 1, source, {static_cast<float>(source.x), static_cast<float>(source.y + 1),
+                                          static_cast<float>(source.z)}};
+  gPickBlock(ctx.player, &hit, false);
+  const bool ok = stackHasType(itemAt(view, selected), expected);
+  trace("EasyPlace: auto-pick {} via {} -> {}", shortName(want), method, ok ? "ok" : "failed");
   return ok;
 }
 
@@ -329,7 +425,7 @@ bool holdingRight(const Context &ctx, const Cell &target, uint8_t hand) {
     return false;
   }
   if ((!held || untag(held) != untag(expected)) && hand == 0 && gAutoSelect.load(std::memory_order_relaxed) &&
-      selectFromHotbar(ctx.player, expected)) {
+      (selectFromHotbar(ctx.player, expected) || autoPick(ctx, expected, want))) {
     stack = gHandItem(ctx.player, hand);
     held = stack ? gItemBlockType(stack).blockType : nullptr;
   }
@@ -453,6 +549,8 @@ bool install(pl::log::Logger &log, std::string &error) {
       {"BlockSourceGetBlock", sig::BlockSourceGetBlock, reinterpret_cast<void **>(&gGetBlock)},
       {"ItemBlockType", sig::ItemBlockType, reinterpret_cast<void **>(&gItemBlockType)},
       {"SelectSlot", sig::SelectSlot, reinterpret_cast<void **>(&gSelectSlot)},
+      {"ItemStackHasItem", sig::ItemStackHasItem, reinterpret_cast<void **>(&gItemStackHasItem)},
+      {"PickBlock", sig::PickBlock, reinterpret_cast<void **>(&gPickBlock)},
       {"HandItem", sig::HandItem, reinterpret_cast<void **>(&gHandItem)},
       {"BlockRegistry", sig::BlockRegistry, reinterpret_cast<void **>(&gRegistry)},
       {"BlockLookupByName", sig::BlockLookupByName, reinterpret_cast<void **>(&gLookup)},
@@ -462,8 +560,12 @@ bool install(pl::log::Logger &log, std::string &error) {
   const auto found = pl::memory::resolveSignatures(sigs, "libminecraftpe.so");
   for (const auto &w : wants) {
     const auto it = found.find(w.sig);
-    if ((it == found.end() || !it->second) && w.out == reinterpret_cast<void **>(&gSelectSlot)) {
-      log.warn("BE-Matica: {} not found, auto-select disabled", w.name);  // optional: only auto-select needs it
+    const bool optional = w.out == reinterpret_cast<void **>(&gSelectSlot) ||
+                          w.out == reinterpret_cast<void **>(&gItemStackHasItem) ||
+                          w.out == reinterpret_cast<void **>(&gPickBlock);
+    if ((it == found.end() || !it->second) && optional) {
+      log.warn("BE-Matica: {} not found, {} disabled", w.name,
+               w.out == reinterpret_cast<void **>(&gSelectSlot) ? "auto-select" : "auto-pick");
       continue;
     }
     if (it == found.end() || !it->second) {
