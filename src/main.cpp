@@ -99,8 +99,6 @@ public:
              .registerModule();
     if (!ok) ctx.logger().warn("BE-Matica: look-at module registration failed");
     waila_.init(kLookModule);
-    // The launcher remembers module on/off across runs; the card is governed by our own "lookat" setting instead.
-    mm::setModuleEnabled(kLookModule, true);
     panel_.init(kControlsModule, ctx.id(), [this](std::string_view key, std::string_view value) { onSetting(key, value); });
     hologram::setProgressListener([this](size_t built, size_t total) {
       panel_.setProgress(built, total);
