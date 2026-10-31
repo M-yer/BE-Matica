@@ -9,6 +9,8 @@ CORE=(src/nbt.cpp src/mcstructure.cpp src/library.cpp src/mesh.cpp src/gzip.cpp 
       build/host-tests/block_map_data.S)
 "${CXX:-c++}" "${CXXFLAGS[@]}" "${CORE[@]}" tests/mcstructure_test.cpp -lz -o build/host-tests/mcstructure_test
 "${CXX:-c++}" "${CXXFLAGS[@]}" "${CORE[@]}" tests/litematic_test.cpp -lz -o build/host-tests/litematic_test
+"${CXX:-c++}" "${CXXFLAGS[@]}" "${CORE[@]}" tests/orient_test.cpp -lz -o build/host-tests/orient_test
 "${CXX:-c++}" "${CXXFLAGS[@]}" "${CORE[@]}" tools/litematic2mcstructure.cpp -lz -o build/host-tests/litematic2mcstructure
 build/host-tests/mcstructure_test
+build/host-tests/orient_test
 build/host-tests/litematic_test tests/data/litematic
