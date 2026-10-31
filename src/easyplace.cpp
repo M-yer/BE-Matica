@@ -2,6 +2,7 @@
 
 #include "game.hpp"
 #include "hologram.hpp"
+#include "itemmap.hpp"
 #include "mesh.hpp"
 #include "orient.hpp"
 
@@ -42,6 +43,7 @@ PickBlockFn gPickBlock = nullptr;
 PlayerGameTypeFn gGameType = nullptr;
 ItemStackCopyFn gItemStackCopy = nullptr;
 ItemStackFromBlockFn gItemStackFromBlock = nullptr;
+ItemStackFromNameFn gItemStackFromName = nullptr;
 std::atomic<ServerTickFn> gServerTickOrig{nullptr};
 void *gServerTickTarget = nullptr;
 BlockRegistryFn gRegistry = nullptr;
@@ -300,6 +302,13 @@ bool wantsLiquid(const Context &ctx, const Cell &target) {
   return want.find("water") != std::string::npos || want.find("lava") != std::string::npos;
 }
 
+// The ghost is water or lava from a bucket item: that bucket is auto-picked like a block before the game pours it.
+bool wantsBucket(const Context &ctx, const Cell &target) {
+  const std::string item =
+      itemmap::itemFor(ctx.h.structure->palette[expectedAt(*ctx.h.structure, ctx.h.origin, ctx.h.view, target)].name);
+  return item.size() > 7 && item.compare(item.size() - 7, 7, "_bucket") == 0;
+}
+
 struct InventoryView {
   void *inventory = nullptr;
   void *container = nullptr;
@@ -325,24 +334,63 @@ const void *itemAt(const InventoryView &view, int slot) { return view.getItem(vi
 
 bool stackHasItem(const void *stack) { return stack && gItemStackHasItem && gItemStackHasItem(stack); }
 
-bool stackHasType(const void *stack, const void *expected) {
-  const void *type = stack ? gItemBlockType(stack).blockType : nullptr;
-  return type && untag(type) == untag(expected);
+// What places a block: normally its own block item (found by block type); doors, buckets, seeds and the like come from
+// an item of another name (found by Item). `item` stays null when the game has no item of that name.
+struct Wanted {
+  std::string block, itemName;
+  const void *type = nullptr, *item = nullptr;
+  uintptr_t key() const { return item ? untag(item) : untag(type); }
+  const std::string &label() const { return itemName.empty() ? block : itemName; }
+};
+
+// ItemStackBase keeps a pointer to a holder whose first word is the Item.
+const void *itemOf(const void *stack) {
+  const void *holder = nullptr, *item = nullptr;
+  if (!stack || !safeRead(static_cast<const char *>(stack) + off::ItemStack_item, &holder, 8) || !holder ||
+      !safeRead(holder, &item, 8))
+    return nullptr;
+  return item;
 }
 
-// The hotbar slot (0-8) holding `expected`, or -1. Reads go through the inventory's own container.
-int hotbarSlotWith(void *player, const void *expected) {
+// The Item registered under a full name, found through the game's own name lookup (a throwaway stack is built and freed).
+const void *itemNamed(const std::string &name) {
+  if (!gItemStackFromName) return nullptr;
+  alignas(16) unsigned char tmp[off::ItemStack_size + 16];
+  gItemStackFromName(tmp, name.data(), name.size(), 1, 0, nullptr);
+  void *vtable = nullptr, *dtor = nullptr;
+  if (!safeRead(tmp, &vtable, 8) || !vtable || !safeRead(vtable, &dtor, 8) || !dtor) return nullptr;  // tmp leaks
+  const void *item = stackHasItem(tmp) ? itemOf(tmp) : nullptr;
+  reinterpret_cast<void (*)(void *)>(dtor)(tmp);
+  return item;
+}
+
+Wanted wantedFor(const std::string &block) {
+  Wanted w{block, itemmap::itemFor(block), blockTypeOf(block), nullptr};
+  if (!w.itemName.empty()) w.item = itemNamed(w.itemName);
+  return w;
+}
+
+bool stackMatches(const void *stack, const Wanted &w) {
+  if (!stack) return false;
+  const void *type = gItemBlockType(stack).blockType;
+  if (type && w.type && untag(type) == untag(w.type)) return true;
+  const void *item = w.item ? itemOf(stack) : nullptr;
+  return item && untag(item) == untag(w.item);
+}
+
+// The hotbar slot (0-8) holding `w`, or -1. Reads go through the inventory's own container.
+int hotbarSlotWith(void *player, const Wanted &w) {
   InventoryView view;
   if (!inventoryView(player, view)) return -1;
   for (int slot = 0; slot < 9; ++slot)
-    if (stackHasType(itemAt(view, slot), expected)) return slot;
+    if (stackMatches(itemAt(view, slot), w)) return slot;
   return -1;
 }
 
-// Switches the held slot to one that holds `expected`, as a tap on the hotbar would (the game tells the server).
-bool selectFromHotbar(void *player, const void *expected) {
+// Switches the held slot to one that holds `w`, as a tap on the hotbar would (the game tells the server).
+bool selectFromHotbar(void *player, const Wanted &w) {
   if (!gSelectSlot) return false;
-  const int slot = hotbarSlotWith(player, expected);
+  const int slot = hotbarSlotWith(player, w);
   if (slot < 0) return false;
   InventoryView view;
   if (!inventoryView(player, view)) return false;
@@ -356,9 +404,8 @@ bool selectFromHotbar(void *player, const void *expected) {
 // rejects the placement. The tap thread posts a job; the server thread runs it inside the ServerPlayer's own tick.
 struct MoveJob {
   std::atomic_int state{0};  // 0 idle, 1 posted
-  uintptr_t expected = 0;
-  std::array<uintptr_t, 36> snapshot{};  // block type per slot of the local inventory, to find this player's ServerPlayer
-  std::string want;
+  Wanted w;
+  std::array<uintptr_t, 36> snapshot{};  // block type (else item) per slot of the local inventory, to find this player's ServerPlayer
   bool inject = false;          // creative-inject: conjure `block` into the hotbar instead of moving a stack
   const void *block = nullptr;  // the wanted type's default Block
   std::chrono::steady_clock::time_point posted{};
@@ -369,7 +416,8 @@ std::atomic<uintptr_t> gMoveFailedFor{0};  // type the last move could not do: l
 uintptr_t slotType(const InventoryView &view, int slot) {
   const void *stack = itemAt(view, slot);
   if (!stackHasItem(stack)) return 0;
-  return untag(gItemBlockType(stack).blockType);
+  const uintptr_t type = untag(gItemBlockType(stack).blockType);
+  return type ? type : untag(itemOf(stack));
 }
 
 // The Inventory's setItem is a known thunk; refuse to call anything else.
@@ -387,9 +435,9 @@ SetItemFn setItemOf(const InventoryView &view) {
 
 void runMoveJob(void *serverPlayer) {
   const auto finish = [&](bool ok) {
-    if (!ok) gMoveFailedFor.store(gMove.expected, std::memory_order_relaxed);
+    if (!ok) gMoveFailedFor.store(gMove.w.key(), std::memory_order_relaxed);
     else gMoveFailedFor.store(0, std::memory_order_relaxed);
-    trace("EasyPlace: auto-pick {} via {} -> {}", shortName(gMove.want), gMove.inject ? "creative-inject" : "inventory-move",
+    trace("EasyPlace: auto-pick {} via {} -> {}", shortName(gMove.w.label()), gMove.inject ? "creative-inject" : "inventory-move",
           ok ? "ok" : "failed");
     gMove.state.store(0, std::memory_order_release);
   };
@@ -399,14 +447,14 @@ void runMoveJob(void *serverPlayer) {
     if (slotType(sv, slot) != gMove.snapshot[slot]) {
       // Another player's inventory, or ours changed since the tap: a job left posted would block every later auto-pick.
       if (std::chrono::steady_clock::now() - gMove.posted < std::chrono::seconds(1)) return;
-      trace("EasyPlace: auto-pick {} -> dropped (inventory changed at slot {})", shortName(gMove.want), slot);
+      trace("EasyPlace: auto-pick {} -> dropped (inventory changed at slot {})", shortName(gMove.w.label()), slot);
       gMove.state.store(0, std::memory_order_release);
       return;
     }
   int source = -1, target = -1;
   if (!gMove.inject)
     for (int slot = 9; slot < 36 && source < 0; ++slot)
-    if (slotType(sv, slot) == gMove.expected) source = slot;
+    if (stackMatches(itemAt(sv, slot), gMove.w)) source = slot;
   for (int slot = 0; slot < 9 && target < 0; ++slot)
     if (!stackHasItem(itemAt(sv, slot))) target = slot;
   if (target < 0 && (!safeRead(static_cast<char *>(sv.inventory) + off::PlayerInventory_selectedSlot, &target, sizeof(target)) ||
@@ -416,12 +464,18 @@ void runMoveJob(void *serverPlayer) {
   alignas(16) unsigned char tmp[off::ItemStack_size + 16];
   void *vtable = nullptr, *dtor = nullptr;
   if (gMove.inject) {
-    if (target < 0 || !setItem || !gItemStackFromBlock || !gMove.block) return finish(false);
-    gItemStackFromBlock(tmp, gMove.block, 1, nullptr);
-    if (!safeRead(tmp, &vtable, 8) || !vtable || !safeRead(vtable, &dtor, 8) || !dtor) return finish(false);  // tmp leaks
-    if (stackHasItem(tmp)) setItem(sv.container, target, tmp);
-    reinterpret_cast<void (*)(void *)>(dtor)(tmp);
-    return finish(slotType(sv, target) == gMove.expected);
+    if (target < 0 || !setItem) return finish(false);
+    // The item of the wanted name first (doors, buckets...); a block the game has no such item for falls back to its own block item.
+    for (int pass = 0; pass < 2 && !stackMatches(itemAt(sv, target), gMove.w); ++pass) {
+      const bool byName = pass == 0;
+      if (byName ? gMove.w.itemName.empty() || !gItemStackFromName : !gItemStackFromBlock || !gMove.block) continue;
+      if (byName) gItemStackFromName(tmp, gMove.w.itemName.data(), gMove.w.itemName.size(), 1, 0, nullptr);
+      else gItemStackFromBlock(tmp, gMove.block, 1, nullptr);
+      if (!safeRead(tmp, &vtable, 8) || !vtable || !safeRead(vtable, &dtor, 8) || !dtor) return finish(false);  // tmp leaks
+      if (stackHasItem(tmp)) setItem(sv.container, target, tmp);
+      reinterpret_cast<void (*)(void *)>(dtor)(tmp);
+    }
+    return finish(stackMatches(itemAt(sv, target), gMove.w));
   }
   if (source < 0 || target < 0 || !setItem || !gItemStackCopy) return finish(false);
   gItemStackCopy(tmp, itemAt(sv, target));
@@ -429,7 +483,7 @@ void runMoveJob(void *serverPlayer) {
   setItem(sv.container, target, itemAt(sv, source));
   setItem(sv.container, source, tmp);
   reinterpret_cast<void (*)(void *)>(dtor)(tmp);
-  finish(slotType(sv, target) == gMove.expected);
+  finish(stackMatches(itemAt(sv, target), gMove.w));
 }
 
 // Vanilla placement orients a block by where the player looks. The structure's own states win: once the server has the
@@ -605,15 +659,14 @@ uint64_t serverTickDetour(void *self, void *a1, void *a2, void *a3) {
 }
 
 // Posts a move of `expected` from the main inventory to the hotbar. True while the move is in flight.
-bool queueMove(const InventoryView &view, const void *expected, const std::string &want) {
+bool queueMove(const InventoryView &view, const Wanted &w) {
   if (!gServerTickOrig.load(std::memory_order_acquire) || !gItemStackCopy || !gItemStackHasItem) return false;
-  if (gMoveFailedFor.load(std::memory_order_relaxed) == untag(expected)) return false;
+  if (gMoveFailedFor.load(std::memory_order_relaxed) == w.key()) return false;
   bool inMain = false;
-  for (int slot = 9; slot < 36 && !inMain; ++slot) inMain = slotType(view, slot) == untag(expected);
+  for (int slot = 9; slot < 36 && !inMain; ++slot) inMain = stackMatches(itemAt(view, slot), w);
   if (!inMain) return false;
   if (gMove.state.load(std::memory_order_acquire) == 1) return true;
-  gMove.expected = untag(expected);
-  gMove.want = want;
+  gMove.w = w;
   gMove.inject = false;
   gMove.block = nullptr;
   for (int slot = 0; slot < 36; ++slot) gMove.snapshot[slot] = slotType(view, slot);
@@ -634,20 +687,20 @@ const void *defaultBlock(const void *type) {
 }
 
 // Creative only: posts a job that builds a stack of the wanted block straight into the hotbar. True while in flight.
-bool queueInject(const InventoryView &view, const void *expected, const std::string &want) {
-  if (!gServerTickOrig.load(std::memory_order_acquire) || !gItemStackFromBlock || !gItemStackHasItem) return false;
-  if (gMoveFailedFor.load(std::memory_order_relaxed) == untag(expected)) return false;
+bool queueInject(const InventoryView &view, const Wanted &w) {
+  const bool byName = !w.itemName.empty() && gItemStackFromName;
+  if (!gServerTickOrig.load(std::memory_order_acquire) || !(gItemStackFromBlock || byName) || !gItemStackHasItem) return false;
+  if (gMoveFailedFor.load(std::memory_order_relaxed) == w.key()) return false;
   for (int slot = 0; slot < 36; ++slot)
-    if (slotType(view, slot) == untag(expected)) return false;  // already carried: nothing to conjure
+    if (stackMatches(itemAt(view, slot), w)) return false;  // already carried: nothing to conjure
   if (gMove.state.load(std::memory_order_acquire) == 1) return true;
-  const void *block = defaultBlock(expected);
-  if (!block) {
-    gMoveFailedFor.store(untag(expected), std::memory_order_relaxed);
-    trace("EasyPlace: auto-pick {} via creative-inject -> failed", shortName(want));
+  const void *block = w.type ? defaultBlock(w.type) : nullptr;
+  if (!block && !byName) {
+    gMoveFailedFor.store(w.key(), std::memory_order_relaxed);
+    trace("EasyPlace: auto-pick {} via creative-inject -> failed", shortName(w.label()));
     return false;
   }
-  gMove.expected = untag(expected);
-  gMove.want = want;
+  gMove.w = w;
   gMove.inject = true;
   gMove.block = block;
   for (int slot = 0; slot < 36; ++slot) gMove.snapshot[slot] = slotType(view, slot);
@@ -656,7 +709,7 @@ bool queueInject(const InventoryView &view, const void *expected, const std::str
   return true;
 }
 
-bool pickSource(const World &world, const Vec3f &eye, const void *expected, BlockPos &out) {
+bool pickSource(const World &world, const Vec3f &eye, const Wanted &w, BlockPos &out) {
   if (!gGetBlock) return false;
   const Cell center{static_cast<int>(std::floor(eye.x)), static_cast<int>(std::floor(eye.y)),
                     static_cast<int>(std::floor(eye.z))};
@@ -669,7 +722,7 @@ bool pickSource(const World &world, const Vec3f &eye, const void *expected, Bloc
         void *block = gGetBlock(world.blockSource, pos);
         void *type = nullptr;
         if (!block || !safeRead(static_cast<char *>(block) + off::Block_blockType, &type, 8) ||
-            !type || untag(type) != untag(expected))
+            !type || !w.type || untag(type) != untag(w.type))
           continue;
         out = pos;
         return true;
@@ -686,18 +739,18 @@ bool creativeMode(void *player) {
   return type == 1;
 }
 
-bool autoPick(const Context &ctx, const void *expected, const std::string &want) {
+bool autoPick(const Context &ctx, const Wanted &w) {
   constexpr std::string_view method = "BlockPickRequest";
   const auto failed = [&] {
-    trace("EasyPlace: auto-pick {} via {} -> failed", shortName(want), method);
+    trace("EasyPlace: auto-pick {} via {} -> failed", shortName(w.label()), method);
     return false;
   };
   if (!gPickBlock || !gSelectSlot || !gItemStackHasItem) return failed();
   InventoryView view;
   if (!inventoryView(ctx.player, view)) return failed();
-  if (queueMove(view, expected, want)) return false;  // the server thread does it; the next tap finds the block in the hotbar
+  if (queueMove(view, w)) return false;  // the server thread does it; the next tap finds the block in the hotbar
   if (!creativeMode(ctx.player)) return false;  // survival: no conjuring, "Hold X"
-  if (queueInject(view, expected, want)) return false;  // the next tap finds the block in the hotbar
+  if (queueInject(view, w)) return false;  // the next tap finds the block in the hotbar
 
   int empty = -1;
   for (int slot = 0; slot < 9; ++slot)
@@ -712,7 +765,7 @@ bool autoPick(const Context &ctx, const void *expected, const std::string &want)
       return failed();
     bool inMain = false;
     for (int slot = 9; slot < 36; ++slot)
-      if (stackHasType(itemAt(view, slot), expected)) {
+      if (stackMatches(itemAt(view, slot), w)) {
         inMain = true;
         break;
       }
@@ -723,8 +776,9 @@ bool autoPick(const Context &ctx, const void *expected, const std::string &want)
     selected = empty;
   }
 
+  if (w.itemName.size() > 7 && w.itemName.compare(w.itemName.size() - 7, 7, "_bucket") == 0) return failed();  // no pick-block for liquids
   BlockPos source{};
-  if (!pickSource(ctx.world, ctx.eye, expected, source)) return failed();
+  if (!pickSource(ctx.world, ctx.eye, w, source)) return failed();
   if (empty >= 0 && !gSelectSlot(view.inventory, empty, 0)) return failed();
   struct PickHit {
     Vec3f rayStart;
@@ -736,29 +790,26 @@ bool autoPick(const Context &ctx, const void *expected, const std::string &want)
   } hit{ctx.eye, ctx.dir, 0, 1, source, {static_cast<float>(source.x), static_cast<float>(source.y + 1),
                                           static_cast<float>(source.z)}};
   gPickBlock(ctx.player, &hit, false);
-  const bool ok = stackHasType(itemAt(view, selected), expected);
-  trace("EasyPlace: auto-pick {} via {} -> {}", shortName(want), method, ok ? "ok" : "failed");
+  const bool ok = stackMatches(itemAt(view, selected), w);
+  trace("EasyPlace: auto-pick {} via {} -> {}", shortName(w.label()), method, ok ? "ok" : "failed");
   return ok;
 }
 
 // The held block must be the one the structure wants at `target`.
 bool holdingRight(const Context &ctx, const Cell &target, uint8_t hand) {
   const std::string &want = ctx.h.structure->palette[expectedAt(*ctx.h.structure, ctx.h.origin, ctx.h.view, target)].name;
-  const void *stack = gHandItem(ctx.player, hand);
-  const void *held = stack ? gItemBlockType(stack).blockType : nullptr;
-  const void *expected = blockTypeOf(want);
-  if (!expected) {
+  const Wanted w = wantedFor(want);
+  if (!w.type) {
     trace("EasyPlace unknown block: '{}'", want);
     say("Unknown block: " + shortName(want));
     return false;
   }
-  if ((!held || untag(held) != untag(expected)) && hand == 0 && gAutoSelect.load(std::memory_order_relaxed) &&
-      (selectFromHotbar(ctx.player, expected) || autoPick(ctx, expected, want))) {
+  const void *stack = gHandItem(ctx.player, hand);
+  if (!stackMatches(stack, w) && hand == 0 && gAutoSelect.load(std::memory_order_relaxed) &&
+      (selectFromHotbar(ctx.player, w) || autoPick(ctx, w)))
     stack = gHandItem(ctx.player, hand);
-    held = stack ? gItemBlockType(stack).blockType : nullptr;
-  }
-  if (!held || untag(held) != untag(expected)) {
-    say("Hold " + shortName(want));
+  if (!stackMatches(stack, w)) {
+    say("Hold " + shortName(w.label()));
     return false;
   }
   return true;
@@ -881,6 +932,10 @@ bool buildBlockInner(void *gm, const BlockPos *pos, uint8_t face, uint8_t hand, 
     target = normal;  // aimed straight at a ghost block's spot
   }
   if (wantsLiquid(ctx, target)) {
+    if (wantsBucket(ctx, target) && !holdingRight(ctx, target, hand)) {
+      trace("EasyPlace build: no bucket in hand for {} {} {}", target[0], target[1], target[2]);
+      return false;
+    }
     trace("EasyPlace build: liquid wanted at {} {} {}, vanilla placement", target[0], target[1], target[2]);
     return orig(gm, pos, face, hand, flag);
   }
@@ -922,7 +977,12 @@ bool useItemDetour(void *gm, void *stack, uint32_t flag) {
   }
   if (!ctx.world.isAir(target)) return orig(gm, stack, flag);
   if (wantsLiquid(ctx, target)) {  // the bucket pours where the game aims it; then the ghost is rechecked
-    const bool used = orig(gm, stack, flag);
+    if (wantsBucket(ctx, target) && !holdingRight(ctx, target, 0)) {
+      trace("EasyPlace air: no bucket in hand for {} {} {}", target[0], target[1], target[2]);
+      return false;
+    }
+    const void *held = gHandItem(ctx.player, 0);  // auto-select may have switched the slot since `stack` was taken
+    const bool used = orig(gm, held ? const_cast<void *>(held) : stack, flag);
     if (used) hologram::checkPlaced(target[0], target[1], target[2]);
     return used;
   }
@@ -956,6 +1016,7 @@ bool install(pl::log::Logger &log, std::string &error) {
       {"PickBlock", sig::PickBlock, reinterpret_cast<void **>(&gPickBlock)},
       {"ItemStackCopy", sig::ItemStackCopy, reinterpret_cast<void **>(&gItemStackCopy)},
       {"ItemStackFromBlock", sig::ItemStackFromBlock, reinterpret_cast<void **>(&gItemStackFromBlock)},
+      {"ItemStackFromName", sig::ItemStackFromName, reinterpret_cast<void **>(&gItemStackFromName)},
       {"ServerPlayerTick", sig::ServerPlayerTick, &serverTick},
       {"HandItem", sig::HandItem, reinterpret_cast<void **>(&gHandItem)},
       {"BlockRegistry", sig::BlockRegistry, reinterpret_cast<void **>(&gRegistry)},
@@ -974,7 +1035,8 @@ bool install(pl::log::Logger &log, std::string &error) {
                           w.out == reinterpret_cast<void **>(&gPickBlock) ||
                           w.out == reinterpret_cast<void **>(&gGameType) ||
                           w.out == reinterpret_cast<void **>(&gItemStackCopy) ||
-                          w.out == reinterpret_cast<void **>(&gItemStackFromBlock) || w.out == &serverTick ||
+                          w.out == reinterpret_cast<void **>(&gItemStackFromBlock) ||
+                          w.out == reinterpret_cast<void **>(&gItemStackFromName) || w.out == &serverTick ||
                           w.out == reinterpret_cast<void **>(&gSetBlock) || w.out == reinterpret_cast<void **>(&gMakeCtx) ||
                           w.out == reinterpret_cast<void **>(&gStateByName);
     if ((it == found.end() || !it->second) && optional) {
