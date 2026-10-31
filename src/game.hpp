@@ -88,6 +88,12 @@ constexpr const char *BlockSourceSetBlock =
     "FF 43 01 D1 FD 7B 02 A9 F5 1B 00 F9 F4 4F 04 A9 FD 83 00 91 55 D0 3B D5 E6 03 05 AA E5 03 04 AA A8 16 40 F9 A8 "
     "83 1F F8 FF FF 00 A9 E4 23 00 91 ? ? ? 94 F4 0B 40 F9 F3 03 00 2A";
 
+// BlockState registry lookup: BlockState* f(const HashedString &name), reading the global name -> BlockState map.
+// BlockState+8 is the id that keys BlockType's state map (+0x1B0); BlockState+0x18 is its HashedString name.
+constexpr const char *BlockStateByName =
+    "FD 7B BF A9 FD 03 00 91 E1 03 00 AA C0 AD 01 F0 00 00 32 91 0B 99 00 94 40 00 00 B4 00 1C 40 F9 FD 7B C1 A8 C0 03 "
+    "5F D6";
+
 // Textured hologram (experimental)
 // BlockTessellator::BlockTessellator(BlockSource*) — the object is kBlockTessellatorSize bytes
 constexpr const char *BlockTessellatorCtor =
@@ -205,6 +211,7 @@ struct BlockChangeContext {
   ~BlockChangeContext() {}
 };
 using BlockChangeContextFn = BlockChangeContext (*)(uint32_t sourceId);
+using BlockStateByNameFn = void *(*)(const HashedString &name);
 using SetBlockFn = bool (*)(void *blockSource, const BlockPos *pos, const void *block, int flags, const void *sync,
                             const void *context);
 

@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -45,6 +46,7 @@ BlockRegistryFn gRegistry = nullptr;
 BlockLookupFn gLookup = nullptr;
 SetBlockFn gSetBlock = nullptr;  // BlockSource::setBlock; only ever called through the vtable slot that points at it
 BlockChangeContextFn gMakeCtx = nullptr;
+BlockStateByNameFn gStateByName = nullptr;
 
 std::atomic_bool gEnabled{false};
 std::atomic_bool gAirPlace{true};
@@ -427,8 +429,13 @@ struct OrientJob {
   BlockPos pos;
   uintptr_t type;
   std::string name, desc;                      // desc: the wanted states, for the log
-  std::vector<std::pair<std::string, int>> want;  // integer and bool states
-  std::string unsupported;                     // string states, which this build cannot map to a value yet
+  struct Want {
+    std::string key, text;  // text: the value of a string state (isText)
+    int value = 0;
+    bool isText = false;
+  };
+  std::vector<Want> want;
+  std::string unsupported;  // states of a type that cannot be resolved (lists, floats...)
   int ticks = 0;
 };
 std::mutex gOrientMu;
@@ -446,7 +453,7 @@ bool readPtr(const void *at, uintptr_t &out) {
   return true;
 }
 
-// BlockType+0x1B0 is the root of a std::map keyed by the state's id (the hash of its name).
+// BlockType+0x1B0 is the root of a std::map keyed by the BlockState's id (BlockState+8, a small registry index).
 bool findState(uintptr_t type, uint64_t key, StateDesc &out) {
   uintptr_t node = 0;
   if (!readPtr(reinterpret_cast<void *>(type + 0x1B0), node)) return false;
@@ -464,18 +471,39 @@ bool findState(uintptr_t type, uint64_t key, StateDesc &out) {
   return false;
 }
 
-// In-order dump of the state ids a type knows, for the log when a lookup fails.
-void dumpStateKeys(uintptr_t node, std::string &out, int &budget) {
-  if (!node || budget <= 0) return;
-  uintptr_t left = 0, right = 0;
-  uint64_t k = 0;
-  StateDesc d{};
-  if (!readPtr(reinterpret_cast<void *>(node), left) || !readPtr(reinterpret_cast<void *>(node + 8), right) ||
-      !safeRead(reinterpret_cast<void *>(node + 0x20), &k, 8) || !safeRead(reinterpret_cast<void *>(node + 0x28), &d, sizeof(d)))
-    return;
-  dumpStateKeys(left, out, --budget);
-  out += fmt::format(" [{:#x}: n={} bits={} end={} mask={:#x}]", k, d.count, d.bits, d.end, d.mask);
-  dumpStateKeys(right, out, --budget);
+struct TagOut {  // non-trivial destructor: returned through x8 like the game's unique_ptr<Tag>
+  void *p = nullptr;
+  ~TagOut() {}
+};
+using StateToTagFn = TagOut (*)(void *state, int value);
+
+// BlockState* by name from the game's registry; nullptr when unknown. Server thread only.
+void *stateByName(const std::string &key) {
+  static std::map<std::string, void *> cache;
+  if (!gStateByName) return nullptr;
+  if (const auto it = cache.find(key); it != cache.end()) return it->second;
+  const HashedString name(key);
+  uintptr_t st = untag(gStateByName(name));
+  uint64_t gotHash = 0;
+  if (!st || !safeRead(reinterpret_cast<void *>(st + 0x18), &gotHash, 8) || gotHash != name.hash) return nullptr;
+  return cache[key] = reinterpret_cast<void *>(st);
+}
+
+// Ordinal of a string state's value: BlockState::toTag(ordinal) (vtable slot 0x10) yields a StringTag (id 8, string at +8).
+bool stringOrdinal(void *state, uint32_t count, const std::string &text, int &out) {
+  static std::map<std::pair<void *, std::string>, int> cache;
+  if (const auto it = cache.find({state, text}); it != cache.end()) return (out = it->second) >= 0;
+  uintptr_t vt = 0, fn = 0;
+  if (!readPtr(state, vt) || !vt || !readPtr(reinterpret_cast<void *>(vt + 0x10), fn) || !fn) return false;
+  for (uint32_t i = 0; i < count && i < 64; ++i) {
+    uintptr_t tag = untag(reinterpret_cast<StateToTagFn>(fn)(state, static_cast<int>(i)).p), tvt = 0, idFn = 0;
+    if (!tag || !readPtr(reinterpret_cast<void *>(tag), tvt) || !readPtr(reinterpret_cast<void *>(tvt + 0x30), idFn) || !idFn ||
+        reinterpret_cast<uint8_t (*)(void *)>(idFn)(reinterpret_cast<void *>(tag)) != 8)
+      return false;
+    if (*reinterpret_cast<const std::string *>(tag + 8) == text) return (cache[{state, text}] = out = static_cast<int>(i)) >= 0;
+  }
+  cache[{state, text}] = -1;
+  return false;
 }
 
 // 1 done (ok or failed, logged), 0 the server does not have the block yet.
@@ -503,21 +531,18 @@ int runOrient(void *serverPlayer, OrientJob &j) {
   if (data >= count || !readPtr(reinterpret_cast<void *>(begin + data * 8), current) || current != untag(block))
     return done("failed", fmt::format("permutation table does not hold the block: data {} of {}", data, count));
 
+  if (!j.unsupported.empty()) return done("failed", "unknown state " + j.unsupported);
   uint32_t index = data;
-  std::string missed = j.unsupported.empty() ? "" : "string states not supported: " + j.unsupported;
-  for (const auto &[key, value] : j.want) {
+  for (const auto &w : j.want) {
+    void *state = stateByName(w.key);
+    uint64_t id = 0;
     StateDesc d{};
-    if (!findState(j.type, HashedString(key).hash, d)) {
-      std::string keys;
-      int budget = 24;
-      uintptr_t root = 0;
-      if (readPtr(reinterpret_cast<void *>(j.type + 0x1B0), root)) dumpStateKeys(root, keys, budget);
-      trace("EasyPlace: orient {} state '{}' (id {:#x}) not found; known:{}", shortName(j.name), key, HashedString(key).hash,
-            keys.empty() ? " none" : keys);
-      missed += (missed.empty() ? "" : ", ") + key + " unknown";
-      continue;
-    }
-    if (value < 0 || static_cast<uint32_t>(value) >= d.count) return done("failed", fmt::format("{}={} out of range {}", key, value, d.count));
+    if (!state || !safeRead(static_cast<char *>(state) + 8, &id, 8) || !findState(j.type, id, d))
+      return done("failed", fmt::format("unknown state {}", w.key));
+    int value = w.value;
+    if (w.isText && !stringOrdinal(state, d.count, w.text, value))
+      return done("failed", fmt::format("unknown value {}={}", w.key, w.text));
+    if (value < 0 || static_cast<uint32_t>(value) >= d.count) return done("failed", fmt::format("{}={} out of range {}", w.key, value, d.count));
     index = (index & ~d.mask) | (static_cast<uint32_t>(value) << (d.end + 1 - d.bits));
   }
   index &= 0xFFFF;
@@ -525,7 +550,7 @@ int runOrient(void *serverPlayer, OrientJob &j) {
   if (index >= count || !readPtr(reinterpret_cast<void *>(begin + index * 8), wanted) || !wanted ||
       !readPtr(reinterpret_cast<void *>(wanted + off::Block_blockType), wantedType) || wantedType != j.type)
     return done("failed", fmt::format("no permutation {} of {}", index, count));
-  if (index == data) return done("ok", "already matches" + (missed.empty() ? "" : "; " + missed));
+  if (index == data) return done("ok", "already matches");
 
   uintptr_t vtable = 0, slot = 0;
   if (!gSetBlock || !gMakeCtx || !readPtr(source, vtable) || !vtable ||
@@ -536,7 +561,7 @@ int runOrient(void *serverPlayer, OrientJob &j) {
   const bool set = reinterpret_cast<SetBlockFn>(slot)(source, &j.pos, reinterpret_cast<void *>(wanted), 3, nullptr, &ctx);
   const bool now = untag(gGetBlock(source, j.pos)) == wanted;
   return done(set && now ? "ok" : "failed",
-              fmt::format("data {} -> {}{}", data, index, missed.empty() ? "" : "; " + missed));
+              fmt::format("data {} -> {}", data, index));
 }
 
 void runOrientJobs(void *serverPlayer) {
@@ -738,7 +763,7 @@ bool afterPlace(const Context &ctx, bool placed) {
 
 // Posts the structure's states for the block just placed at `cell`. Doors are two blocks: the cell above is posted too.
 void queueOrient(const Context &ctx, const Cell &cell, bool upperDone = false) {
-  if (!gSetBlock || !gMakeCtx || !gServerTickOrig.load(std::memory_order_acquire)) return;
+  if (!gSetBlock || !gMakeCtx || !gStateByName || !gServerTickOrig.load(std::memory_order_acquire)) return;
   const Structure &st = *ctx.h.structure;
   const int32_t idx = expectedAt(st, ctx.h.origin, ctx.h.view, cell);
   if (idx < 0) return;
@@ -750,12 +775,15 @@ void queueOrient(const Context &ctx, const Cell &cell, bool upperDone = false) {
     const nbt::Tag &t = bs.states.items[i];
     const std::string &key = bs.states.keys[i];
     if (t.type == nbt::Type::Byte || t.type == nbt::Type::Short || t.type == nbt::Type::Int) {
-      job.want.emplace_back(key, static_cast<int>(t.i));
+      job.want.push_back({key, {}, static_cast<int>(t.i), false});
       job.desc += fmt::format("{}{}={}", job.desc.empty() ? "" : ",", key, t.i);
       if (key == "upper_block_bit") upper = t.i != 0;
+    } else if (t.type == nbt::Type::String) {
+      job.want.push_back({key, t.s, 0, true});
+      job.desc += fmt::format("{}{}={}", job.desc.empty() ? "" : ",", key, t.s);
     } else {
       job.unsupported += (job.unsupported.empty() ? "" : ",") + key;
-      job.desc += fmt::format("{}{}={}", job.desc.empty() ? "" : ",", key, t.type == nbt::Type::String ? t.s : "?");
+      job.desc += fmt::format("{}{}=?", job.desc.empty() ? "" : ",", key);
     }
   }
   if (ctx.h.view.rotation != 0 || ctx.h.view.mirror) {
@@ -893,6 +921,7 @@ bool install(pl::log::Logger &log, std::string &error) {
       {"BlockLookupByName", sig::BlockLookupByName, reinterpret_cast<void **>(&gLookup)},
       {"BlockSourceSetBlock", sig::BlockSourceSetBlock, reinterpret_cast<void **>(&gSetBlock)},
       {"BlockChangeContext", sig::BlockChangeContext, reinterpret_cast<void **>(&gMakeCtx)},
+      {"BlockStateByName", sig::BlockStateByName, reinterpret_cast<void **>(&gStateByName)},
   };
   std::vector<std::string> sigs;
   for (const auto &w : wants) sigs.emplace_back(w.sig);
@@ -905,11 +934,13 @@ bool install(pl::log::Logger &log, std::string &error) {
                           w.out == reinterpret_cast<void **>(&gGameType) ||
                           w.out == reinterpret_cast<void **>(&gItemStackCopy) ||
                           w.out == reinterpret_cast<void **>(&gItemStackFromBlock) || w.out == &serverTick ||
-                          w.out == reinterpret_cast<void **>(&gSetBlock) || w.out == reinterpret_cast<void **>(&gMakeCtx);
+                          w.out == reinterpret_cast<void **>(&gSetBlock) || w.out == reinterpret_cast<void **>(&gMakeCtx) ||
+                          w.out == reinterpret_cast<void **>(&gStateByName);
     if ((it == found.end() || !it->second) && optional) {
       log.warn("BE-Matica: {} not found, {} disabled", w.name,
                w.out == reinterpret_cast<void **>(&gSelectSlot) ? "auto-select"
-               : w.out == reinterpret_cast<void **>(&gSetBlock) || w.out == reinterpret_cast<void **>(&gMakeCtx)
+               : w.out == reinterpret_cast<void **>(&gSetBlock) || w.out == reinterpret_cast<void **>(&gMakeCtx) ||
+                       w.out == reinterpret_cast<void **>(&gStateByName)
                    ? "orientation"
                    : "auto-pick");
       continue;
