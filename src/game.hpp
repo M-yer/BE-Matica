@@ -71,6 +71,17 @@ constexpr const char *MaterialGroupRef =
     "? ? ? ? ? ? ? ? A0 C3 00 D1 ? ? ? ? ? ? ? ? ? ? ? ? A8 03 01 D1 A1 C3 00 D1 ? ? ? ? BB 67 7C A9 ? ? ? ? 21 23 00 91 "
     "20 00 80 52 ? ? ? ? 78 FE 40 F9";
 constexpr uintptr_t MaterialGroupRefAdrp = 0x10;
+// Tessellator::end(Tessellator&, mode, name, nameLen, flag) -> mce::Mesh through x8; "Untagged Tessellator Mesh" callers pass mode 0, flag 0
+constexpr const char *TessellatorEnd =
+    "FD 7B BB A9 FC 67 01 A9 F8 5F 02 A9 F6 57 03 A9 F4 4F 04 A9 FD 03 00 91 FF 03 0A D1 58 D0 3B D5";
+// mce::Mesh::~Mesh()
+constexpr const char *MeshDtor = "FD 7B BE A9 F4 4F 01 A9 FD 03 00 91 F3 03 00 AA ? ? ? ? 60 26 41 F9";
+// mce::Mesh::isValid() (has at least one draw range)
+constexpr const char *MeshValid = "09 A0 45 A9 08 01 09 CB 69 55 95 52 08 FD 42 D3 49 55 B5 72 08 7D 09 1B";
+// Builds a texture-variant holder (variant at +0x18, index at +0x30) by copying a variant through the game's own visitor
+constexpr const char *TextureVariantWrap =
+    "FF 03 01 D1 FD 7B 01 A9 F6 57 02 A9 F4 4F 03 A9 FD 43 00 91 55 D0 3B D5 F4 03 00 AA A8 16 40 F9 E8 07 00 F9 08 00 "
+    "80 12 76 18 40 B9 01 08 00 A9";
 }  // namespace sig
 
 namespace off {
@@ -90,6 +101,19 @@ constexpr unsigned HitResult_type = 0x18, HitResult_face = 0x1C, HitResult_pos =
 constexpr unsigned Block_blockType = 0x68;
 constexpr unsigned PlayerInventory_container = 0xB8;  // selectSlot reads it for the slot count and getItem
 constexpr unsigned Container_vtGetItem = 0x40;  // vtable byte offset: ItemStack* getItem(int slot)
+// Textured hologram (1.26.60.4, static RE; see knowledge note 10)
+constexpr unsigned LevelRenderer_clientInstance = 0x3D8;   // RenderLevel: ldr x22,[x0,#0x3d8]; it is ClientInstance (vtable slot 0x278 / BaseActorRenderContext ctor arg)
+constexpr unsigned LevelRenderer_atlasTexture = 0x1B8;     // TexturePtr "atlas.terrain" (written in the LevelRenderer ctor at lib+0xb7936f0)
+constexpr unsigned ClientInstance_blockTessellator = 0x618; // game-owned BlockTessellator(nullptr BlockSource), 0x47960 bytes
+constexpr unsigned ClientInstance_itemInHandRenderer = 0x640;
+constexpr unsigned ItemInHandRenderer_matOpaqueBlock = 0x1A0;       // MaterialPtr (16 bytes): "opaque_block"
+constexpr unsigned ItemInHandRenderer_matOpaqueBlockColor = 0x1B0;  // "opaque_block_color"
+constexpr unsigned ItemInHandRenderer_matAlphaBlock = 0x1C0;        // "entity_alphatest"
+constexpr unsigned ItemInHandRenderer_matBlendBlock = 0x1E0;        // "entity_alphablend"
+constexpr unsigned ItemInHandRenderer_matAlphaColoredBlock = 0x200; // "item_in_hand_entity_alphatest_color"
+constexpr unsigned ItemInHandRenderer_matAlphaOneSidedBlock = 0x220;        // "entity_alphatest_one_sided"
+constexpr unsigned ItemInHandRenderer_matAlphaOneSidedColoredBlock = 0x230; // "item_in_hand_entity_alphatest_one_sided_color"
+constexpr unsigned Mesh_maxSize = 0x270;  // renderMeshImmediately keeps a Mesh in a 0x270-byte frame; reads fields up to +0x250
 }  // namespace off
 
 enum Primitive : int { QuadList = 1, LineList = 4 };
@@ -129,7 +153,8 @@ using BlockRegistryFn = void *(*)();
 using BlockLookupFn = void *(*)(void *registry, const HashedString *name);
 using GetHitResultFn = void *(*)(void *level);
 
-constexpr size_t kBlockTessellatorSize = 0x7960;
+// The game allocates 0x47960 bytes (`mov w0,#0x7960; movk w0,#4,lsl #16` before every ctor call); 0x7960 overflowed the heap.
+constexpr size_t kBlockTessellatorSize = 0x47960;
 // shared_ptr-like handle; the user-provided destructor makes the ABI return it through x8 like the game does.
 // Deliberately never released: materials live for the whole session.
 struct MaterialPtr {
