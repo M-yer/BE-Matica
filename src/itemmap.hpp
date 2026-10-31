@@ -29,6 +29,17 @@ inline std::string itemFor(std::string_view block) {
   };
   for (const Entry &e : table)
     if (name == e.block) return std::string(ns) + std::string(e.item);
+  // Signs are placed by the sign item (it picks wall or standing from the clicked face and sets the facing); the block's
+  // own item places the default permutation instead. Oak has no wood prefix and dark oak is "darkoak" in block names.
+  for (const std::string_view suffix : {"wall_sign", "standing_sign"})
+    if (name.size() >= suffix.size() && name.substr(name.size() - suffix.size()) == suffix) {
+      std::string_view wood = name.substr(0, name.size() - suffix.size());
+      if (!wood.empty() && wood.back() == '_') wood.remove_suffix(1);
+      else if (!wood.empty()) continue;  // e.g. "foowall_sign": not a sign block name
+      if (wood.empty()) wood = "oak";
+      if (wood == "darkoak") wood = "dark_oak";
+      return std::string(ns) + std::string(wood) + "_sign";
+    }
   // Every door (wood, iron, copper and their waxed forms) is placed by the item of the same name. "_door" with the
   // underscore keeps trapdoors out.
   constexpr std::string_view door = "_door";

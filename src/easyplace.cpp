@@ -22,6 +22,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace bematica::easyplace {
@@ -164,6 +165,39 @@ struct World {
   }
 };
 
+// Blocks that open, toggle or press when clicked: placing against one would use it instead of placing. Block types are
+// looked up by name once (the lists are Bedrock names), so this only runs on the game thread.
+bool interactable(const World &w, const Cell &c) {
+  static std::unordered_set<uintptr_t> types;
+  static bool built = false;
+  if (!built) {
+    built = true;
+    std::vector<std::string> names;
+    for (const char *n : {"barrel", "chest", "trapped_chest", "ender_chest", "furnace", "lit_furnace", "blast_furnace",
+                          "lit_blast_furnace", "smoker", "lit_smoker", "crafting_table", "hopper", "dropper", "dispenser",
+                          "crafter", "brewing_stand", "anvil", "enchanting_table", "lectern", "loom", "cartography_table",
+                          "smithing_table", "fletching_table", "grindstone", "stonecutter_block", "beacon", "bell",
+                          "jukebox", "noteblock", "cake", "bed", "lever", "stone_button", "polished_blackstone_button",
+                          "wooden_button", "wooden_door", "trapdoor", "fence_gate", "unpowered_repeater", "powered_repeater",
+                          "unpowered_comparator", "powered_comparator", "daylight_detector", "command_block",
+                          "chain_command_block", "repeating_command_block", "chiseled_bookshelf", "decorated_pot",
+                          "undyed_shulker_box"})
+      names.push_back(std::string("minecraft:") + n);
+    for (const char *wood : {"spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove", "cherry", "pale_oak", "bamboo",
+                             "crimson", "warped"})
+      for (const char *kind : {"door", "trapdoor", "fence_gate", "button"})
+        names.push_back(std::string("minecraft:") + wood + "_" + kind);
+    for (const char *color : {"white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray",
+                              "cyan", "purple", "blue", "brown", "green", "red", "black"})
+      names.push_back(std::string("minecraft:") + color + "_shulker_box");
+    for (const std::string &n : names)
+      if (const void *t = blockTypeOf(n)) types.insert(untag(t));
+  }
+  const BlockPos p{c[0], c[1], c[2]};
+  void *block = gGetBlock(w.blockSource, p);
+  return block && types.count(untag(at<void *>(block, off::Block_blockType)));
+}
+
 // The first structure block along the view ray that is still empty in the world, stopping at the block
 // that was actually clicked or, with nothing clicked, at reach. Filled cells are skipped: the ray passes
 // through plants like grass and flowers, which aren't air.
@@ -207,6 +241,13 @@ void say(const std::string &text) {
 // placement against its current hit result, so that is pointed at the same face for the call.
 // `preferFace` (-1: none) is tried first, for blocks whose facing the game takes from the clicked face.
 bool placeAt(void *gm, void *player, const World &w, const Cell &target, uint8_t hand, bool flag, int preferFace = -1) {
+  // Clicking an interactable block (barrel, door, lever...) uses it instead of placing, so those supports are left out
+  // whenever another support or air place can take the click.
+  bool otherSupport = gAirPlace.load(std::memory_order_relaxed);
+  for (int f = 0; f < 6 && !otherSupport; ++f) {
+    const Cell n{target[0] - kFaceDir[f][0], target[1] - kFaceDir[f][1], target[2] - kFaceDir[f][2]};
+    otherSupport = !w.isAir(n) && !interactable(w, n);
+  }
   // The last pass is air place: click the empty target cell itself, which the game fills since air is
   // replaceable.
   for (int step = 0; step < 8; ++step) {
@@ -218,7 +259,7 @@ bool placeAt(void *gm, void *player, const World &w, const Cell &target, uint8_t
     const Cell n = air ? target
                        : Cell{target[0] - kFaceDir[face][0], target[1] - kFaceDir[face][1],
                               target[2] - kFaceDir[face][2]};
-    if (!air && w.isAir(n)) continue;
+    if (!air && (w.isAir(n) || (otherSupport && interactable(w, n)))) continue;
     const BlockPos pos{n[0], n[1], n[2]};
     const float hit[3] = {n[0] + 0.5f + 0.5f * kFaceDir[clickFace][0], n[1] + 0.5f + 0.5f * kFaceDir[clickFace][1],
                           n[2] + 0.5f + 0.5f * kFaceDir[clickFace][2]};
@@ -375,10 +416,13 @@ Wanted wantedFor(const std::string &block) {
 
 bool stackMatches(const void *stack, const Wanted &w) {
   if (!stack) return false;
+  // An item of the wanted name decides alone: a wall sign's own block item shares its block type but places the wrong thing.
+  if (w.item) {
+    const void *item = itemOf(stack);
+    return item && untag(item) == untag(w.item);
+  }
   const void *type = gItemBlockType(stack).blockType;
-  if (type && w.type && untag(type) == untag(w.type)) return true;
-  const void *item = w.item ? itemOf(stack) : nullptr;
-  return item && untag(item) == untag(w.item);
+  return type && w.type && untag(type) == untag(w.type);
 }
 
 // The hotbar slot (0-8) holding `w`, or -1. Reads go through the inventory's own container.
@@ -475,7 +519,10 @@ void runMoveJob(void *serverPlayer) {
       if (byName) gItemStackFromName(tmp, gMove.w.itemName.data(), gMove.w.itemName.size(), 1, 0, nullptr);
       else gItemStackFromBlock(tmp, gMove.block, 1, nullptr);
       if (!safeRead(tmp, &vtable, 8) || !vtable || !safeRead(vtable, &dtor, 8) || !dtor) return finish(false);  // tmp leaks
-      if (stackHasItem(tmp)) setItem(sv.container, target, tmp);
+      const bool built = stackHasItem(tmp);
+      trace("EasyPlace: inject {} by {} -> {}", shortName(gMove.w.label()), byName ? "name" : "block",
+            built ? "stack has an item" : "empty stack");
+      if (built) setItem(sv.container, target, tmp);
       reinterpret_cast<void (*)(void *)>(dtor)(tmp);
     }
     return finish(stackMatches(itemAt(sv, target), gMove.w));

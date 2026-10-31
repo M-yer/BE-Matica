@@ -35,6 +35,15 @@ int main() {
   CHECK(itemFor("minecraft:stone").empty());
   CHECK(itemFor("minecraft:oak_planks").empty());
   CHECK(itemFor("minecraft:spruce_sign").empty());
+  CHECK(itemFor("minecraft:spruce_wall_sign") == "minecraft:spruce_sign");
+  CHECK(itemFor("minecraft:spruce_standing_sign") == "minecraft:spruce_sign");
+  CHECK(itemFor("minecraft:wall_sign") == "minecraft:oak_sign");
+  CHECK(itemFor("minecraft:standing_sign") == "minecraft:oak_sign");
+  CHECK(itemFor("minecraft:darkoak_wall_sign") == "minecraft:dark_oak_sign");
+  CHECK(itemFor("minecraft:pale_oak_standing_sign") == "minecraft:pale_oak_sign");
+  CHECK(itemFor("minecraft:crimson_wall_sign") == "minecraft:crimson_sign");
+  CHECK(itemFor("minecraft:spruce_hanging_sign").empty());
+  CHECK(itemFor("minecraft:foowall_sign").empty());
   CHECK(itemFor("spruce_door").empty());
   CHECK(itemFor("other:spruce_door").empty());
   CHECK(itemFor("").empty());
