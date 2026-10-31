@@ -13,6 +13,7 @@
 #include <sys/uio.h>
 #include <unistd.h>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <map>
@@ -359,6 +360,7 @@ struct MoveJob {
   std::string want;
   bool inject = false;          // creative-inject: conjure `block` into the hotbar instead of moving a stack
   const void *block = nullptr;  // the wanted type's default Block
+  std::chrono::steady_clock::time_point posted{};
 };
 MoveJob gMove;
 std::atomic<uintptr_t> gMoveFailedFor{0};  // type the last move could not do: later taps fall through to pick-block
@@ -393,7 +395,13 @@ void runMoveJob(void *serverPlayer) {
   InventoryView sv;
   if (className(serverPlayer) != "ServerPlayer" || !inventoryView(serverPlayer, sv)) return;  // not ours: wait for the next tick
   for (int slot = 0; slot < 36; ++slot)
-    if (slotType(sv, slot) != gMove.snapshot[slot]) return;  // another player's inventory
+    if (slotType(sv, slot) != gMove.snapshot[slot]) {
+      // Another player's inventory, or ours changed since the tap: a job left posted would block every later auto-pick.
+      if (std::chrono::steady_clock::now() - gMove.posted < std::chrono::seconds(1)) return;
+      trace("EasyPlace: auto-pick {} -> dropped (inventory changed at slot {})", shortName(gMove.want), slot);
+      gMove.state.store(0, std::memory_order_release);
+      return;
+    }
   int source = -1, target = -1;
   if (!gMove.inject)
     for (int slot = 9; slot < 36 && source < 0; ++slot)
@@ -608,6 +616,7 @@ bool queueMove(const InventoryView &view, const void *expected, const std::strin
   gMove.inject = false;
   gMove.block = nullptr;
   for (int slot = 0; slot < 36; ++slot) gMove.snapshot[slot] = slotType(view, slot);
+  gMove.posted = std::chrono::steady_clock::now();
   gMove.state.store(1, std::memory_order_release);
   return true;
 }
@@ -641,6 +650,7 @@ bool queueInject(const InventoryView &view, const void *expected, const std::str
   gMove.inject = true;
   gMove.block = block;
   for (int slot = 0; slot < 36; ++slot) gMove.snapshot[slot] = slotType(view, slot);
+  gMove.posted = std::chrono::steady_clock::now();
   gMove.state.store(1, std::memory_order_release);
   return true;
 }
