@@ -155,4 +155,17 @@ inline bool transformState(std::string_view block, std::string_view key, StateVa
   return v.i != before.i || v.s != before.s;
 }
 
+// The face to click so the game itself places `block` facing the wanted way, or -1 when the block's facing does not come
+// from the clicked face. Wall signs, wall banners and wall heads take facing_direction straight from the clicked face of
+// their support block (Bedrock face numbers: 2 north, 3 south, 4 west, 5 east). `v` is the already transformed value.
+inline int clickFace(std::string_view block, std::string_view key, const StateValue &v) {
+  using namespace detail;
+  constexpr std::string_view prefix = "minecraft:";
+  if (block.substr(0, prefix.size()) == prefix) block.remove_prefix(prefix.size());
+  if (key.substr(0, prefix.size()) == prefix) key.remove_prefix(prefix.size());
+  if (key != "facing_direction" || v.isText || v.i < 2 || v.i > 5) return -1;
+  if (endsWith(block, "wall_sign") || endsWith(block, "wall_banner") || block == "skull") return v.i;
+  return -1;
+}
+
 }  // namespace bematica::orient

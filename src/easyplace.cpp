@@ -203,10 +203,13 @@ void say(const std::string &text) {
 
 // Places the held block into `target` by clicking the face of a solid neighbour. The game checks the
 // placement against its current hit result, so that is pointed at the same face for the call.
-bool placeAt(void *gm, void *player, const World &w, const Cell &target, uint8_t hand, bool flag) {
+// `preferFace` (-1: none) is tried first, for blocks whose facing the game takes from the clicked face.
+bool placeAt(void *gm, void *player, const World &w, const Cell &target, uint8_t hand, bool flag, int preferFace = -1) {
   // The last pass is air place: click the empty target cell itself, which the game fills since air is
   // replaceable.
-  for (uint8_t face = 0; face < 7; ++face) {
+  for (int step = 0; step < 8; ++step) {
+    if (step == 0 && preferFace < 0) continue;
+    const uint8_t face = static_cast<uint8_t>(step == 0 ? preferFace : step - 1);
     const bool air = face == 6;
     if (air && !gAirPlace.load(std::memory_order_relaxed)) break;
     const uint8_t clickFace = air ? 1 : face;
@@ -446,6 +449,7 @@ struct OrientJob {
   std::vector<Want> want;
   std::string unsupported;  // states of a type that cannot be resolved (lists, floats...)
   int ticks = 0;
+  bool verifyOnly = false;  // block entity placed with a chosen face: only log whether the game's own facing matches
 };
 std::mutex gOrientMu;
 std::vector<OrientJob> gOrient;
@@ -525,6 +529,11 @@ int runOrient(void *serverPlayer, OrientJob &j) {
   uintptr_t blockType = 0;
   if (!block || !readPtr(static_cast<char *>(block) + off::Block_blockType, blockType) || blockType != j.type) return 0;
   const auto done = [&](const char *status, const std::string &note) {
+    if (j.verifyOnly) {
+      trace("EasyPlace: native-facing {} {} via face -> {}{}", shortName(j.name), j.desc,
+            std::string_view(status) == "ok" ? "ok" : "unchanged", note.empty() ? "" : " (" + note + ")");
+      return 1;
+    }
     trace("EasyPlace: orient {} {} -> {}{}", shortName(j.name), j.desc, status, note.empty() ? "" : " (" + note + ")");
     return 1;
   };
@@ -560,6 +569,7 @@ int runOrient(void *serverPlayer, OrientJob &j) {
       !readPtr(reinterpret_cast<void *>(wanted + off::Block_blockType), wantedType) || wantedType != j.type)
     return done("failed", fmt::format("no permutation {} of {}", index, count));
   if (index == data) return done("ok", "already matches");
+  if (j.verifyOnly) return done("unchanged", fmt::format("data {} wanted {}", data, index));
   // The chunk's palette stores Block pointers and finds entries by comparing them whole, tag byte included: setBlock gets
   // the pointer exactly as the game holds it, never the untagged copy used for our own comparisons.
   uintptr_t wantedRaw = 0;
@@ -798,6 +808,24 @@ bool hasBlockEntity(const std::string &n) {
   return false;
 }
 
+// The face to click at `target` so the game itself gives the block the structure's facing, or -1 (see orient::clickFace).
+int nativeFace(const Context &ctx, const Cell &target) {
+  const Structure &st = *ctx.h.structure;
+  const int32_t idx = expectedAt(st, ctx.h.origin, ctx.h.view, target);
+  if (idx < 0) return -1;
+  const BlockState &bs = st.palette[idx];
+  for (size_t i = 0; i < bs.states.items.size() && i < bs.states.keys.size(); ++i) {
+    const nbt::Tag &t = bs.states.items[i];
+    if (bs.states.keys[i] != "facing_direction" ||
+        (t.type != nbt::Type::Byte && t.type != nbt::Type::Short && t.type != nbt::Type::Int))
+      continue;
+    orient::StateValue v{static_cast<int>(t.i), {}, false};
+    orient::transformState(bs.name, bs.states.keys[i], v, ctx.h.view.rotation, ctx.h.view.mirror);
+    return orient::clickFace(bs.name, bs.states.keys[i], v);
+  }
+  return -1;
+}
+
 // Posts the structure's states for the block just placed at `cell`. Doors are two blocks: the cell above is posted too.
 void queueOrient(const Context &ctx, const Cell &cell, bool upperDone = false) {
   if (!gSetBlock || !gMakeCtx || !gStateByName || !gServerTickOrig.load(std::memory_order_acquire)) return;
@@ -828,8 +856,14 @@ void queueOrient(const Context &ctx, const Cell &cell, bool upperDone = false) {
     }
   }
   if (hasBlockEntity(shortName(bs.name))) {
-    trace("EasyPlace: orient {} {} -> skipped (block entity)", shortName(bs.name), job.desc);
-    return;
+    if (nativeFace(ctx, cell) < 0) {
+      trace("EasyPlace: orient {} {} -> skipped (block entity)", shortName(bs.name), job.desc);
+      return;
+    }
+    // The placement clicked the face that makes the game pick this facing; only check, never setBlock.
+    job.verifyOnly = true;
+    std::erase_if(job.want, [](const OrientJob::Want &w) { return w.key != "facing_direction"; });
+    job.desc = fmt::format("facing_direction={}", job.want.empty() ? 0 : job.want[0].value);
   }
   job.type = untag(blockTypeOf(bs.name));
   if (!job.type) return;
@@ -892,14 +926,15 @@ bool buildBlockInner(void *gm, const BlockPos *pos, uint8_t face, uint8_t hand, 
   }
   trace("EasyPlace build: placing at {} {} {}", target[0], target[1], target[2]);
 
-  if (target == normal) {
+  const int nativeClick = nativeFace(ctx, target);
+  if (target == normal && (nativeClick < 0 || nativeClick == face)) {
     tInside = true;
     const bool placed = orig(gm, pos, face, hand, flag);
     tInside = false;
     if (placed) queueOrient(ctx, target);
     return afterPlace(ctx, placed);
   }
-  const bool placed = placeAt(gm, ctx.player, ctx.world, target, hand, flag);
+  const bool placed = placeAt(gm, ctx.player, ctx.world, target, hand, flag, nativeClick);
   if (placed) queueOrient(ctx, target);
   return afterPlace(ctx, placed);
 }
@@ -931,7 +966,7 @@ bool useItemDetour(void *gm, void *stack, uint32_t flag) {
     return false;
   }
   trace("EasyPlace air: placing at {} {} {}", target[0], target[1], target[2]);
-  const bool placed = placeAt(gm, ctx.player, ctx.world, target, 0, false);
+  const bool placed = placeAt(gm, ctx.player, ctx.world, target, 0, false, nativeFace(ctx, target));
   if (placed) {
     hologram::checkPlaced(target[0], target[1], target[2]);
     queueOrient(ctx, target);

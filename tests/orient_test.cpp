@@ -51,6 +51,30 @@ std::string worldDir(const Structure &s, const View &view, int dx, int dz) {
 }  // namespace
 
 int main() {
+  // Face-driven block entities: the clicked face is the (transformed) facing_direction.
+  for (int rot = 0; rot < 4; ++rot)
+    for (int mirror = 0; mirror < 2; ++mirror)
+      for (int v = 0; v < 6; ++v) {
+        StateValue s{v, {}, false};
+        orient::transformState("minecraft:oak_wall_sign", "facing_direction", s, rot, mirror != 0);
+        const int want = s.i >= 2 && s.i <= 5 ? s.i : -1;
+        CHECK(orient::clickFace("minecraft:oak_wall_sign", "facing_direction", s) == want);
+      }
+  {
+    StateValue north{2, {}, false}, east{5, {}, false}, up{1, {}, false}, text{0, "north", true};
+    CHECK(orient::clickFace("wall_sign", "facing_direction", north) == 2);
+    CHECK(orient::clickFace("minecraft:crimson_wall_sign", "minecraft:facing_direction", east) == 5);
+    CHECK(orient::clickFace("wall_banner", "facing_direction", east) == 5);
+    CHECK(orient::clickFace("skull", "facing_direction", north) == 2);
+    CHECK(orient::clickFace("skull", "facing_direction", up) == -1);
+    CHECK(orient::clickFace("barrel", "facing_direction", north) == -1);       // follows the player's look, not the face
+    CHECK(orient::clickFace("standing_sign", "facing_direction", north) == -1);
+    CHECK(orient::clickFace("wall_sign", "direction", north) == -1);
+    CHECK(orient::clickFace("wall_sign", "facing_direction", text) == -1);
+    StateValue r{2, {}, false};  // north rotated a quarter turn clockwise faces east
+    orient::transformState("wall_sign", "facing_direction", r, 1, false);
+    CHECK(orient::clickFace("wall_sign", "facing_direction", r) == 5);
+  }
   // The transform must agree with where mesh.cpp puts the hologram: step along structure +x (east) / +z (south).
   for (int mirror = 0; mirror < 2; ++mirror)
     for (int rot = 0; rot < 4; ++rot) {
