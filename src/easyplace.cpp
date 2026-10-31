@@ -3,6 +3,7 @@
 #include "game.hpp"
 #include "hologram.hpp"
 #include "mesh.hpp"
+#include "orient.hpp"
 
 #include <pl/Logger.hpp>
 #include <fmt/format.h>
@@ -811,20 +812,20 @@ void queueOrient(const Context &ctx, const Cell &cell, bool upperDone = false) {
     const nbt::Tag &t = bs.states.items[i];
     const std::string &key = bs.states.keys[i];
     if (t.type == nbt::Type::Byte || t.type == nbt::Type::Short || t.type == nbt::Type::Int) {
-      job.want.push_back({key, {}, static_cast<int>(t.i), false});
-      job.desc += fmt::format("{}{}={}", job.desc.empty() ? "" : ",", key, t.i);
-      if (key == "upper_block_bit") upper = t.i != 0;
+      orient::StateValue v{static_cast<int>(t.i), {}, false};
+      orient::transformState(bs.name, key, v, ctx.h.view.rotation, ctx.h.view.mirror);
+      job.want.push_back({key, {}, v.i, false});
+      job.desc += fmt::format("{}{}={}", job.desc.empty() ? "" : ",", key, v.i);
+      if (key == "upper_block_bit") upper = v.i != 0;
     } else if (t.type == nbt::Type::String) {
-      job.want.push_back({key, t.s, 0, true});
-      job.desc += fmt::format("{}{}={}", job.desc.empty() ? "" : ",", key, t.s);
+      orient::StateValue v{0, t.s, true};
+      orient::transformState(bs.name, key, v, ctx.h.view.rotation, ctx.h.view.mirror);
+      job.want.push_back({key, v.s, 0, true});
+      job.desc += fmt::format("{}{}={}", job.desc.empty() ? "" : ",", key, v.s);
     } else {
       job.unsupported += (job.unsupported.empty() ? "" : ",") + key;
       job.desc += fmt::format("{}{}=?", job.desc.empty() ? "" : ",", key);
     }
-  }
-  if (ctx.h.view.rotation != 0 || ctx.h.view.mirror) {
-    trace("EasyPlace: orient {} {} -> skipped (rotated view)", shortName(bs.name), job.desc);
-    return;
   }
   if (hasBlockEntity(shortName(bs.name))) {
     trace("EasyPlace: orient {} {} -> skipped (block entity)", shortName(bs.name), job.desc);
