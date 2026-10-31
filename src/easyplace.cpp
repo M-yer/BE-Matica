@@ -573,6 +573,68 @@ bool stringOrdinal(void *state, uint32_t count, const std::string &text, int &ou
   return false;
 }
 
+// The permutation of `type` that carries the wanted states on top of the states of `block`.
+struct Permutation {
+  uintptr_t raw = 0;  // the pointer exactly as the type's table holds it, tag byte included
+  uint32_t data = 0, index = 0;
+  std::string error;  // empty when raw is valid
+};
+
+Permutation permutationFor(void *block, uintptr_t type, const std::vector<OrientJob::Want> &wants, const std::string &unsupported) {
+  Permutation out;
+  uint16_t data = 0;
+  uintptr_t begin = 0, end = 0;
+  if (!safeRead(static_cast<char *>(block) + 0x128, &data, 2) ||
+      !readPtr(reinterpret_cast<void *>(type + off::BlockType_permutations), begin) ||
+      !readPtr(reinterpret_cast<void *>(type + off::BlockType_permutations + 8), end) || end <= begin ||
+      end - begin > 0x10000 * 8) {
+    out.error = "cannot read the permutation table";
+    return out;
+  }
+  const size_t count = (end - begin) / 8;
+  uintptr_t current = 0;
+  if (data >= count || !readPtr(reinterpret_cast<void *>(begin + data * 8), current) || current != untag(block)) {
+    out.error = fmt::format("permutation table does not hold the block: data {} of {}", data, count);
+    return out;
+  }
+
+  if (!unsupported.empty()) {
+    out.error = "unknown state " + unsupported;
+    return out;
+  }
+  uint32_t index = data;
+  for (const auto &w : wants) {
+    void *state = stateByName(w.key);
+    uint64_t id = 0;
+    StateDesc d{};
+    if (!state || !safeRead(static_cast<char *>(state) + 8, &id, 8) || !findState(type, id, d)) {
+      out.error = fmt::format("unknown state {}", w.key);
+      return out;
+    }
+    int value = w.value;
+    if (w.isText && !stringOrdinal(state, d.count, w.text, value)) {
+      out.error = fmt::format("unknown value {}={}", w.key, w.text);
+      return out;
+    }
+    if (value < 0 || static_cast<uint32_t>(value) >= d.count) {
+      out.error = fmt::format("{}={} out of range {}", w.key, value, d.count);
+      return out;
+    }
+    index = (index & ~d.mask) | (static_cast<uint32_t>(value) << (d.end + 1 - d.bits));
+  }
+  index &= 0xFFFF;
+  uintptr_t wanted = 0, wantedType = 0;
+  if (index >= count || !readPtr(reinterpret_cast<void *>(begin + index * 8), wanted) || !wanted ||
+      !readPtr(reinterpret_cast<void *>(wanted + off::Block_blockType), wantedType) || wantedType != type ||
+      !safeRead(reinterpret_cast<void *>(begin + index * 8), &out.raw, 8) || untag(reinterpret_cast<void *>(out.raw)) != wanted) {
+    out.error = fmt::format("no permutation {} of {}", index, count);
+    return out;
+  }
+  out.data = data;
+  out.index = index;
+  return out;
+}
+
 // 1 done (ok or failed, logged), 0 the server does not have the block yet.
 int runOrient(void *serverPlayer, OrientJob &j) {
   const Fields &f = fields(serverPlayer);
@@ -591,44 +653,15 @@ int runOrient(void *serverPlayer, OrientJob &j) {
     trace("EasyPlace: orient {} {} -> {}{}", shortName(j.name), j.desc, status, note.empty() ? "" : " (" + note + ")");
     return 1;
   };
-  uint16_t data = 0;
-  uintptr_t begin = 0, end = 0;
-  if (!safeRead(static_cast<char *>(block) + 0x128, &data, 2) ||
-      !readPtr(reinterpret_cast<void *>(j.type + off::BlockType_permutations), begin) ||
-      !readPtr(reinterpret_cast<void *>(j.type + off::BlockType_permutations + 8), end) || end <= begin ||
-      end - begin > 0x10000 * 8)
-    return done("failed", "cannot read the permutation table");
-  const size_t count = (end - begin) / 8;
-  uintptr_t current = 0;
-  if (data >= count || !readPtr(reinterpret_cast<void *>(begin + data * 8), current) || current != untag(block))
-    return done("failed", fmt::format("permutation table does not hold the block: data {} of {}", data, count));
-
-  if (!j.unsupported.empty()) return done("failed", "unknown state " + j.unsupported);
-  uint32_t index = data;
-  for (const auto &w : j.want) {
-    void *state = stateByName(w.key);
-    uint64_t id = 0;
-    StateDesc d{};
-    if (!state || !safeRead(static_cast<char *>(state) + 8, &id, 8) || !findState(j.type, id, d))
-      return done("failed", fmt::format("unknown state {}", w.key));
-    int value = w.value;
-    if (w.isText && !stringOrdinal(state, d.count, w.text, value))
-      return done("failed", fmt::format("unknown value {}={}", w.key, w.text));
-    if (value < 0 || static_cast<uint32_t>(value) >= d.count) return done("failed", fmt::format("{}={} out of range {}", w.key, value, d.count));
-    index = (index & ~d.mask) | (static_cast<uint32_t>(value) << (d.end + 1 - d.bits));
-  }
-  index &= 0xFFFF;
-  uintptr_t wanted = 0, wantedType = 0;
-  if (index >= count || !readPtr(reinterpret_cast<void *>(begin + index * 8), wanted) || !wanted ||
-      !readPtr(reinterpret_cast<void *>(wanted + off::Block_blockType), wantedType) || wantedType != j.type)
-    return done("failed", fmt::format("no permutation {} of {}", index, count));
+  const Permutation perm = permutationFor(block, j.type, j.want, j.unsupported);
+  if (!perm.error.empty()) return done("failed", perm.error);
+  const uint32_t data = perm.data, index = perm.index;
   if (index == data) return done("ok", "already matches");
   if (j.verifyOnly) return done("unchanged", fmt::format("data {} wanted {}", data, index));
   // The chunk's palette stores Block pointers and finds entries by comparing them whole, tag byte included: setBlock gets
   // the pointer exactly as the game holds it, never the untagged copy used for our own comparisons.
-  uintptr_t wantedRaw = 0;
-  if (!safeRead(reinterpret_cast<void *>(begin + index * 8), &wantedRaw, 8) || untag(reinterpret_cast<void *>(wantedRaw)) != wanted ||
-      (wantedRaw >> 56) != (reinterpret_cast<uintptr_t>(block) >> 56))
+  const uintptr_t wantedRaw = perm.raw;
+  if ((wantedRaw >> 56) != (reinterpret_cast<uintptr_t>(block) >> 56))
     return done("failed", "permutation pointer does not carry the same tag as the placed block");
 
   uintptr_t vtable = 0, slot = 0;
@@ -659,6 +692,83 @@ void runOrientJobs(void *serverPlayer) {
     else ++i;
   }
   gOrientCount.store(static_cast<int>(gOrient.size()), std::memory_order_release);
+}
+
+// Player-direction block entities (chest, furnace, barrel...) get their facing from the placing player's yaw, which the
+// server reads from the ServerPlayer. The client posts what the structure wants for the spot; the game's own
+// getPlacementBlock then returns the permutation with that facing, so the game creates the block entity for the final block.
+struct FacingJob {
+  BlockPos pos;
+  uintptr_t type;
+  std::string name, desc;
+  std::vector<OrientJob::Want> want;
+  std::chrono::steady_clock::time_point expires;
+};
+std::mutex gFacingMu;
+std::vector<FacingJob> gFacing;
+std::atomic_int gFacingCount{0}, gFacingHooks{0};  // gFacingHooks: orient::placementHook bits that are installed
+constexpr auto kFacingLife = std::chrono::seconds(1);
+std::array<std::atomic<PlacementFn>, 3> gPlacementOrig{};
+std::array<void *, 3> gPlacementTarget{};
+
+void facingLog(const FacingJob &j, const std::string &status) {
+  trace("EasyPlace: native-facing {} {} via server-placement -> {}", shortName(j.name), j.desc, status);
+}
+
+// Callers hold gFacingMu.
+void expireFacing() {
+  const auto now = std::chrono::steady_clock::now();
+  for (size_t i = 0; i < gFacing.size();) {
+    if (gFacing[i].expires > now) {
+      ++i;
+      continue;
+    }
+    facingLog(gFacing[i], "failed(the placement never reached the server)");
+    gFacing.erase(gFacing.begin() + i);
+  }
+  gFacingCount.store(static_cast<int>(gFacing.size()), std::memory_order_release);
+}
+
+// Runs on the server thread inside getPlacementBlock; `result` is the block the game picked for the player.
+const void *applyFacing(const void *result, void *actor, const BlockPos *pos) {
+  if (!result || !pos) return result;
+  std::lock_guard lock(gFacingMu);
+  expireFacing();
+  uintptr_t type = 0;
+  if (!readPtr(reinterpret_cast<const char *>(untag(result)) + off::Block_blockType, type)) return result;
+  for (size_t i = 0; i < gFacing.size(); ++i) {
+    FacingJob &j = gFacing[i];
+    if (j.pos.x != pos->x || j.pos.y != pos->y || j.pos.z != pos->z || j.type != type) continue;
+    // The client's own prediction runs the same code for the LocalPlayer: leave the job for the server's placement.
+    if (className(actor) != "ServerPlayer") return result;
+    const FacingJob job = std::move(j);
+    gFacing.erase(gFacing.begin() + i);
+    gFacingCount.store(static_cast<int>(gFacing.size()), std::memory_order_release);
+    const Permutation perm = permutationFor(const_cast<void *>(result), job.type, job.want, {});
+    if (!perm.error.empty()) {
+      facingLog(job, "failed(" + perm.error + ")");
+      return result;
+    }
+    if (perm.index == perm.data) {
+      facingLog(job, "passthrough");
+      return result;
+    }
+    if ((perm.raw >> 56) != (reinterpret_cast<uintptr_t>(result) >> 56)) {
+      facingLog(job, "failed(permutation pointer does not carry the same tag as the game's block)");
+      return result;
+    }
+    facingLog(job, "ok");
+    return reinterpret_cast<const void *>(perm.raw);
+  }
+  return result;
+}
+
+template <size_t N>
+const void *placementDetour(void *blockType, void *actor, const BlockPos *pos, uint8_t face, const void *click, int itemValue) {
+  PlacementFn orig;
+  while (!(orig = gPlacementOrig[N].load(std::memory_order_acquire))) std::this_thread::yield();
+  const void *result = orig(blockType, actor, pos, face, click, itemValue);
+  return gFacingCount.load(std::memory_order_acquire) > 0 ? applyFacing(result, actor, pos) : result;
 }
 
 uint64_t serverTickDetour(void *self, void *a1, void *a2, void *a3) {
@@ -877,6 +987,48 @@ int nativeFace(const Context &ctx, const Cell &target) {
   return -1;
 }
 
+// The placement-time facing the structure wants for `cell`, or false when the block is not one the installed placement hooks cover.
+bool buildFacing(const Context &ctx, const Cell &cell, FacingJob &out) {
+  const Structure &st = *ctx.h.structure;
+  const int32_t idx = expectedAt(st, ctx.h.origin, ctx.h.view, cell);
+  if (idx < 0) return false;
+  const BlockState &bs = st.palette[idx];
+  const int hook = orient::placementHook(bs.name);
+  if (!hook || !(gFacingHooks.load(std::memory_order_relaxed) & hook) || nativeFace(ctx, cell) >= 0) return false;
+  out = {{cell[0], cell[1], cell[2]}, untag(blockTypeOf(bs.name)), bs.name, {}, {}, {}};
+  for (size_t i = 0; i < bs.states.items.size() && i < bs.states.keys.size(); ++i) {
+    const nbt::Tag &t = bs.states.items[i];
+    const std::string &key = bs.states.keys[i];
+    if (!orient::isDirectionKey(key)) continue;
+    orient::StateValue v{static_cast<int>(t.i), t.s, t.type == nbt::Type::String};
+    if (!v.isText && t.type != nbt::Type::Byte && t.type != nbt::Type::Short && t.type != nbt::Type::Int) continue;
+    orient::transformState(bs.name, key, v, ctx.h.view.rotation, ctx.h.view.mirror);
+    out.want.push_back({key, v.s, v.i, v.isText});
+    out.desc += fmt::format("{}{}={}", out.desc.empty() ? "" : ",", key, v.isText ? v.s : std::to_string(v.i));
+  }
+  return out.type && !out.want.empty();
+}
+
+// Called before the placement is sent, so the server finds the job when it places the block. True if one was posted.
+bool postFacing(const Context &ctx, const Cell &cell) {
+  FacingJob job;
+  if (!buildFacing(ctx, cell, job)) return false;
+  job.expires = std::chrono::steady_clock::now() + kFacingLife;
+  std::lock_guard lock(gFacingMu);
+  expireFacing();
+  if (gFacing.size() >= 64) gFacing.erase(gFacing.begin());
+  gFacing.push_back(std::move(job));
+  gFacingCount.store(static_cast<int>(gFacing.size()), std::memory_order_release);
+  return true;
+}
+
+// The game refused the placement: the job must not linger and hit a later block at the same spot.
+void dropFacing(const Cell &cell) {
+  std::lock_guard lock(gFacingMu);
+  std::erase_if(gFacing, [&](const FacingJob &j) { return j.pos.x == cell[0] && j.pos.y == cell[1] && j.pos.z == cell[2]; });
+  gFacingCount.store(static_cast<int>(gFacing.size()), std::memory_order_release);
+}
+
 // Posts the structure's states for the block just placed at `cell`. Doors are two blocks: the cell above is posted too.
 void queueOrient(const Context &ctx, const Cell &cell, bool upperDone = false) {
   if (!gSetBlock || !gMakeCtx || !gStateByName || !gServerTickOrig.load(std::memory_order_acquire)) return;
@@ -908,6 +1060,8 @@ void queueOrient(const Context &ctx, const Cell &cell, bool upperDone = false) {
   }
   if (hasBlockEntity(shortName(bs.name))) {
     if (nativeFace(ctx, cell) < 0) {
+      FacingJob facing;
+      if (buildFacing(ctx, cell, facing)) return;  // chosen at placement time; the placement hook logs the result
       trace("EasyPlace: orient {} {} -> skipped (block entity)", shortName(bs.name), job.desc);
       return;
     }
@@ -982,15 +1136,18 @@ bool buildBlockInner(void *gm, const BlockPos *pos, uint8_t face, uint8_t hand, 
   trace("EasyPlace build: placing at {} {} {}", target[0], target[1], target[2]);
 
   const int nativeClick = nativeFace(ctx, target);
+  const bool facing = postFacing(ctx, target);
   if (target == normal && (nativeClick < 0 || nativeClick == face)) {
     tInside = true;
     const bool placed = orig(gm, pos, face, hand, flag);
     tInside = false;
     if (placed) queueOrient(ctx, target);
+    else if (facing) dropFacing(target);
     return afterPlace(ctx, placed);
   }
   const bool placed = placeAt(gm, ctx.player, ctx.world, target, hand, flag, nativeClick);
   if (placed) queueOrient(ctx, target);
+  else if (facing) dropFacing(target);
   return afterPlace(ctx, placed);
 }
 
@@ -1026,12 +1183,41 @@ bool useItemDetour(void *gm, void *stack, uint32_t flag) {
     return false;
   }
   trace("EasyPlace air: placing at {} {} {}", target[0], target[1], target[2]);
+  const bool facing = postFacing(ctx, target);
   const bool placed = placeAt(gm, ctx.player, ctx.world, target, 0, false, nativeFace(ctx, target));
   if (placed) {
     hologram::checkPlaced(target[0], target[1], target[2]);
     queueOrient(ctx, target);
+  } else if (facing) {
+    dropFacing(target);
   }
   return afterPlace(ctx, placed);
+}
+
+// Optional: without a hook, yaw-driven block entities keep the game's own facing (logged as skipped).
+template <size_t N> void hookPlacement(pl::log::Logger &log, const char *name, const char *signature, uintptr_t offset, int bit) {
+  const auto found = pl::memory::resolveSignatures(std::vector<std::string>{signature}, "libminecraftpe.so");
+  const auto it = found.find(signature);
+  if (it == found.end() || !it->second) {
+    log.warn("BE-Matica: {} not found, native facing of that block family disabled", name);
+    return;
+  }
+  void *target = reinterpret_cast<void *>(it->second + offset), *origSlot = nullptr;
+  if (pl::memory::hook(target, reinterpret_cast<void *>(&placementDetour<N>), &origSlot) != 0 || !origSlot) {
+    log.warn("BE-Matica: could not hook {}, native facing of that block family disabled", name);
+    return;
+  }
+  gPlacementOrig[N].store(reinterpret_cast<PlacementFn>(origSlot), std::memory_order_release);
+  gPlacementTarget[N] = target;
+  gFacingHooks.fetch_or(bit);
+  log.info("BE-Matica: {} at {:#x}", name, it->second + offset);
+}
+
+void installFacingHooks(pl::log::Logger &log) {
+  if (!gStateByName) return;
+  hookPlacement<0>(log, "PlacementBase", sig::PlacementBase, 0, 1);
+  hookPlacement<1>(log, "PlacementBarrel", sig::PlacementBarrel, sig::PlacementBarrelOffset, 2);
+  hookPlacement<2>(log, "PlacementDispenser", sig::PlacementDispenser, 0, 4);
 }
 
 bool install(pl::log::Logger &log, std::string &error) {
@@ -1104,6 +1290,7 @@ bool install(pl::log::Logger &log, std::string &error) {
   }
   gUseOrig.store(reinterpret_cast<UseItemFn>(origSlot), std::memory_order_release);
   gUseTarget = use;
+  installFacingHooks(log);
   if (serverTick) {
     origSlot = nullptr;
     if (pl::memory::hook(serverTick, reinterpret_cast<void *>(&serverTickDetour), &origSlot) == 0 && origSlot) {
@@ -1137,6 +1324,13 @@ void uninstall() {
   gUseTarget = nullptr;
   if (gServerTickTarget) pl::memory::unhook(gServerTickTarget, reinterpret_cast<void *>(&serverTickDetour));
   gServerTickTarget = nullptr;
+  const std::array<void *, 3> detours{reinterpret_cast<void *>(&placementDetour<0>), reinterpret_cast<void *>(&placementDetour<1>),
+                                      reinterpret_cast<void *>(&placementDetour<2>)};
+  for (size_t i = 0; i < gPlacementTarget.size(); ++i) {
+    if (gPlacementTarget[i]) pl::memory::unhook(gPlacementTarget[i], detours[i]);
+    gPlacementTarget[i] = nullptr;
+  }
+  gFacingHooks.store(0);
 }
 
 void setEnabled(bool enabled) { gEnabled = enabled; }

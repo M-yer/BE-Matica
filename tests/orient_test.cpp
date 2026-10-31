@@ -174,6 +174,14 @@ int main() {
   CHECK(text("barrel", "some_mystery_state", "north", 1, true) == "north");
   CHECK(num("barrel", "facing_direction", 3, 4, false) == 3);
 
+  // yaw-driven block entities: which placement hook covers them
+  CHECK(orient::placementHook("minecraft:chest") == 1 && orient::placementHook("smoker") == 1);
+  CHECK(orient::placementHook("minecraft:barrel") == 2);
+  CHECK(orient::placementHook("dropper") == 4 && orient::placementHook("minecraft:dispenser") == 4);
+  CHECK(orient::placementHook("oak_wall_sign") == 0 && orient::placementHook("stone") == 0);
+  CHECK(orient::isDirectionKey("cardinal_direction") && orient::isDirectionKey("minecraft:facing_direction"));
+  CHECK(!orient::isDirectionKey("open_bit") && !orient::isDirectionKey("upper_block_bit"));
+
   std::printf(failures ? "%d failure(s)\n" : "all tests passed\n", failures);
   return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }
