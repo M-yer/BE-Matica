@@ -49,6 +49,7 @@ std::array<int, 3> gOrigin{};
 View gView;
 Vec3f gCamera{};
 bool gHaveCamera = false;
+std::array<int, 2> gForward{0, 1};  // the player's facing along X / Z, snapped to the nearer axis (guarded by gMu)
 std::atomic_bool gPlaceAtPlayer{false};
 pl::log::Logger *gLog = nullptr;
 std::atomic_bool gVisible{true};
@@ -444,7 +445,13 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
     }
     Vec3f eye, dir;
     std::array<int, 3> cell;
-    if (structure && aimRay(static_cast<const char *>(self), eye, dir) && hoveredCell(*structure, origin, view, eye, dir, cell))
+    const bool aimed = aimRay(static_cast<const char *>(self), eye, dir);
+    if (aimed && (dir.x != 0 || dir.z != 0)) {
+      std::lock_guard lock(gMu);
+      gForward = std::fabs(dir.x) > std::fabs(dir.z) ? std::array<int, 2>{dir.x > 0 ? 1 : -1, 0}
+                                                     : std::array<int, 2>{0, dir.z > 0 ? 1 : -1};
+    }
+    if (structure && aimed && hoveredCell(*structure, origin, view, eye, dir, cell))
       drawHover(screenContext, tess, faceMat, cell, cam);
   }
 
@@ -554,6 +561,17 @@ void nudge(int dx, int dy, int dz) {
   gPlaced.clear();
   gFullCheck = true;
   gOrigin[0] += dx, gOrigin[1] += dy, gOrigin[2] += dz;
+  rebuildLocked();
+}
+
+void nudgeView(int forward, int right) {
+  std::lock_guard lock(gMu);
+  const auto [fx, fz] = gForward;
+  // Right of the facing direction: facing south (+Z) the right hand points west (-X).
+  const int dx = forward * fx - right * fz, dz = forward * fz + right * fx;
+  gPlaced.clear();
+  gFullCheck = true;
+  gOrigin[0] += dx, gOrigin[2] += dz;
   rebuildLocked();
 }
 

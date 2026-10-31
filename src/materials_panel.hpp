@@ -18,7 +18,7 @@ namespace bematica {
 // list, which scrolls by dragging, and tapping a row ticks it off.
 class MaterialsPanel {
 public:
-  // `control` receives the same keys as the settings page: east, west, up, down, south, north, rotate, mirror,
+  // `control` receives the same keys as the settings page: forward, back, left, right, up, down, rotate, mirror,
   // layer_down, layer_up, layers, hologram, easyplace, lock.
   void init(std::string moduleId, std::string modId,
             std::function<void(std::string_view key, std::string_view value)> control);

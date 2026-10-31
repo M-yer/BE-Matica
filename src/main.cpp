@@ -263,10 +263,15 @@ private:
     static constexpr struct {
       const char *key;
       int dx, dy, dz;
-    } kNudges[] = {{"east", 1, 0, 0}, {"west", -1, 0, 0}, {"up", 0, 1, 0},
-                   {"down", 0, -1, 0}, {"south", 0, 0, 1}, {"north", 0, 0, -1}};
+    } kNudges[] = {{"up", 0, 1, 0}, {"down", 0, -1, 0}};
+    // The D-pad follows the player's view: x is to the right, z is forward.
+    static constexpr struct {
+      const char *key;
+      int right, forward;
+    } kViewNudges[] = {{"forward", 0, 1}, {"back", 0, -1}, {"left", -1, 0}, {"right", 1, 0}};
     const bool moves = key == "rotate" || key == "mirror" ||
-                       std::any_of(std::begin(kNudges), std::end(kNudges), [&](const auto &n) { return key == n.key; });
+                       std::any_of(std::begin(kNudges), std::end(kNudges), [&](const auto &n) { return key == n.key; }) ||
+                       std::any_of(std::begin(kViewNudges), std::end(kViewNudges), [&](const auto &n) { return key == n.key; });
     if (moves && locked_) {
       panel_.toast("Placement is locked");
       return true;
@@ -274,6 +279,11 @@ private:
     for (const auto &n : kNudges)
       if (key == n.key) {
         hologram::nudge(n.dx, n.dy, n.dz);
+        return true;
+      }
+    for (const auto &n : kViewNudges)
+      if (key == n.key) {
+        hologram::nudgeView(n.forward, n.right);
         return true;
       }
     const int maxLayer = loadedName_.empty() ? 0 : loaded_.size[1] - 1;
@@ -358,7 +368,7 @@ private:
         {"Control panel",
          "The floating panel is on screen while BE-Matica Controls is on. Drag its header (the dots) to move it; "
          "the arrow folds it away.\nThe header shows how much of the shown structure is built.\n"
-         "Move tab: the D-pad shifts the hologram one block along X and Z (up = south, left = east), the \u25B2 / \u25BC "
+         "Move tab: the D-pad shifts the hologram one block the way you're facing (up = forward, left = your left), the \u25B2 / \u25BC "
          "pair moves it up and down, Rotate +90\u00B0 turns it, Mirror flips it, "
          "< and > pick a single layer, All shows every layer.\nBlocks tab: every block the structure needs; tap a "
          "row to tick it off."},
@@ -591,8 +601,8 @@ private:
     using T = mm::ConfigControlTypeV2;
     // Same controls and directions as the panel's Move tab: the D-pad, the Y pair, then rotate and mirror.
     static constexpr const char *kMoves[][3] = {
-        {"south", "\u25B2  Up  (south, +Z)", "D-pad (X / Z)"},  {"east", "\u25C0  Left  (east, +X)", "D-pad (X / Z)"},
-        {"west", "\u25B6  Right  (west, -X)", "D-pad (X / Z)"}, {"north", "\u25BC  Down  (north, -Z)", "D-pad (X / Z)"},
+        {"forward", "\u25B2  Forward", "D-pad (follows your view)"}, {"left", "\u25C0  Left", "D-pad (follows your view)"},
+        {"right", "\u25B6  Right", "D-pad (follows your view)"},     {"back", "\u25BC  Back", "D-pad (follows your view)"},
         {"up", "\u25B2  Raise  (+Y)", "Height (Y)"},            {"down", "\u25BC  Lower  (-Y)", "Height (Y)"},
         {"rotate", "Rotate +90\u00B0", "Turn"},                 {"mirror", "Mirror", "Turn"}};
     for (const auto &m : kMoves)

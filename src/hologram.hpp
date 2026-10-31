@@ -27,6 +27,8 @@ void setOrigin(std::array<int, 3> origin);  // world position of the structure's
 // Called on the render thread whenever the structure's origin changes (moves, or placed at the player).
 void setOriginListener(std::function<void(std::array<int, 3> origin)> listener);
 void nudge(int dx, int dy, int dz);
+// Moves along the player's view, snapped to X or Z: `forward` away from the player, `right` to their right.
+void nudgeView(int forward, int right);
 void setView(const View &view);
 void setVisible(bool visible);
 void setOpacity(float alpha);  // 0..1

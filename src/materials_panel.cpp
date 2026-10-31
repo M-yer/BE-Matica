@@ -291,17 +291,16 @@ void MaterialsPanel::redrawLocked() {
       const float top = y_ + headerH_ + pad, half = (w_ - pad * 3) / 2;
       float yy = top;
       if (tab_ == Tab::Move) {
-        // D-pad moves along X and Z (up = south, +Z; left = east, +X); the column on the right moves along Y.
+        // D-pad moves along the player's view (up = forward, left = their left); the column on the right moves along Y.
         const float c = ctrlH, gap = pad * 0.5f, dx = x_ + (w_ - (c * 4 + gap * 2 + pad * 2)) / 2;
         auto arrow = [&](float bx, float by, Icon which, const char *key) {
           button(bx, by, c, c, "", key, "", false);
           icon(cmds, which, bx, by, c);
         };
-        arrow(dx + c + gap, yy, Icon::Up, "south");
-        arrow(dx, yy + c + gap, Icon::Left, "east");
-        arrow(dx + (c + gap) * 2, yy + c + gap, Icon::Right, "west");
-        arrow(dx + c + gap, yy + (c + gap) * 2, Icon::Down, "north");
-        text(cmds, dx + c + gap + (c - textWidth("X/Z", font)) / 2, yy + c + gap + (c - font) / 2, font, kDim, "X/Z");
+        arrow(dx + c + gap, yy, Icon::Up, "forward");
+        arrow(dx, yy + c + gap, Icon::Left, "left");
+        arrow(dx + (c + gap) * 2, yy + c + gap, Icon::Right, "right");
+        arrow(dx + c + gap, yy + (c + gap) * 2, Icon::Down, "back");
         const float yx = dx + (c + gap) * 3 + pad * 2;
         arrow(yx, yy, Icon::Up, "up");
         text(cmds, yx + (c - textWidth("Y", font)) / 2, yy + c + gap + (c - font) / 2, font, kDim, "Y");
