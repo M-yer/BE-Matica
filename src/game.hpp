@@ -68,6 +68,14 @@ constexpr const char *ServerPlayerTick =
 constexpr const char *BlockRegistry = "? ? ? ? ? ? ? ? C0 03 5F D6 E2 03 1F 2A E3 03 1F 2A E4 03 1F 2A";
 // Looks up a BlockType by its full name (HashedString); old names like minecraft:grass resolve too
 constexpr const char *BlockLookupByName = "E2 03 1F 2A E3 03 1F 2A E4 03 1F 2A ? ? ? ? FF 03 02 D1 FD 7B 03 A9";
+// BlockChangeContext constructor for a command-style change (w0 = source id; returned through x8)
+constexpr const char *BlockChangeContext =
+    "29 00 80 52 1F A1 00 39 09 91 00 39 69 00 80 52 09 19 00 B9 49 00 80 52 1F E1 00 39 09 21 00 39 00 21 00 B9 C0 03 "
+    "5F D6";
+// BlockSource::setBlock(pos, block, flags, ActorBlockSyncMessage*, BlockChangeContext&): vtable slot 0xF8. The slot is
+// compared with this code's address before it is called.
+constexpr const char *BlockSourceSetBlock =
+    "FF 43 01 D1 FD 7B 02 A9 F5 1B 00 F9 F4 4F 04 A9 FD 83 00 91 55 D0 3B D5 E6 03 05 AA E5 03 04 AA";
 
 // Textured hologram (experimental)
 // BlockTessellator::BlockTessellator(BlockSource*) — the object is kBlockTessellatorSize bytes
@@ -115,6 +123,8 @@ constexpr unsigned Level_vtGetHitResult = 0xA80; // vtable byte offset
 constexpr unsigned HitResult_rayStart = 0x0, HitResult_rayDir = 0xC;  // Vec3 each: the player's aim ray
 constexpr unsigned HitResult_type = 0x18, HitResult_face = 0x1C, HitResult_pos = 0x20, HitResult_hitPos = 0x2C;
 constexpr unsigned Block_blockType = 0x68;
+constexpr unsigned BlockType_permutations = 0x1E8;  // std::vector<Block*>, one per combination of block states
+constexpr unsigned BlockSource_vtSetBlock = 0xF8;   // vtable byte offset
 constexpr unsigned PlayerInventory_selectedSlot = 0x10;
 constexpr unsigned PlayerInventory_container = 0xB8;  // selectSlot reads it for the slot count and getItem
 constexpr unsigned Container_vtGetItem = 0x40;  // vtable byte offset: ItemStack* getItem(int slot)
@@ -176,6 +186,14 @@ using HandItemFn = const void *(*)(void *player, uint8_t hand);
 using BlockRegistryFn = void *(*)();
 using BlockLookupFn = void *(*)(void *registry, const HashedString *name);
 using GetHitResultFn = void *(*)(void *level);
+// 0x40-byte value the game builds in x8 (hence the user-provided destructor)
+struct BlockChangeContext {
+  alignas(8) unsigned char raw[0x40];
+  ~BlockChangeContext() {}
+};
+using BlockChangeContextFn = BlockChangeContext (*)(uint32_t sourceId);
+using SetBlockFn = bool (*)(void *blockSource, const BlockPos *pos, const void *block, int flags, const void *sync,
+                            const void *context);
 
 // The game allocates 0x47960 bytes (`mov w0,#0x7960; movk w0,#4,lsl #16` before every ctor call); 0x7960 overflowed the heap.
 constexpr size_t kBlockTessellatorSize = 0x47960;
