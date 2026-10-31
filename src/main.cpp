@@ -568,7 +568,7 @@ private:
                       .type = T::Toggle, .defaultValue = "true", .currentValue = airPlaceOn_ ? "true" : "false",
                       .hasCurrentValue = true});
         schema.node(N{.id = "autoselect", .key = "autoselect", .category = "easyplace", .title = "Auto-select block",
-                      .description = "Switch to the hotbar slot holding the block a ghost block needs.",
+                      .description = "Select or pick the block a ghost block needs into an empty hotbar slot.",
                       .type = T::Toggle, .defaultValue = "true", .currentValue = autoSelectOn_ ? "true" : "false",
                       .hasCurrentValue = true});
         schema.node(N{.id = "easyplace_help", .category = "easyplace", .title = "How it works",
