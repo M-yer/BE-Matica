@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <android/log.h>
+#include <cctype>
 #include <atomic>
 #include <chrono>
 #include <string>
@@ -66,6 +67,17 @@ bool gOriginReported = false;                             // guarded by gMu
 GetBlockFn gGetBlock = nullptr;
 BlockRegistryFn gRegistry = nullptr;
 BlockLookupFn gLookup = nullptr;
+
+// What the look-at card last showed (guarded by gMu). A new listener forgets it so the card refreshes.
+struct LookKey {
+  bool valid = false;
+  uintptr_t type = 0;  // untagged BlockType under the crosshair
+  std::shared_ptr<const Structure> structure;
+  int32_t palette = -1;  // the structure's palette index for that cell, -1 when it wants nothing there
+  bool operator==(const LookKey &o) const = default;
+};
+LookKey gLookKey;
+std::function<void(const LookInfo &)> gLookListener;  // guarded by gMu
 
 bool finite(const Vec3f &v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
 
@@ -162,9 +174,10 @@ std::string className(const void *obj) {
   return std::string(n);
 }
 
-// The player's aim ray, from the level's current hit result. The level is found in the level renderer by its class
-// name, and the hit result getter is only called after checking it is the expected one-line field getter.
-bool aimRay(const char *levelRenderer, Vec3f &eye, Vec3f &dir) {
+// The player's aim ray, from the level's current hit result, plus what it hit (type 0 is a block, at hitPos).
+// The level is found in the level renderer by its class name, and the hit result getter is only called after
+// checking it is the expected one-line field getter.
+bool aimRay(const char *levelRenderer, Vec3f &eye, Vec3f &dir, int32_t &hitType, BlockPos &hitPos) {
   static int levelField = -2;
   if (levelField == -2) {
     levelField = -1;
@@ -186,7 +199,8 @@ bool aimRay(const char *levelRenderer, Vec3f &eye, Vec3f &dir) {
   if (!safeRead(getter, code, sizeof(code)) || (code[0] & 0xFFC003FF) != 0xF9400000 || code[1] != 0xD65F03C0) return false;
   const char *hr = static_cast<const char *>(reinterpret_cast<GetHitResultFn>(getter)(level));
   Vec3f d{};
-  if (!hr || !safeRead(hr + off::HitResult_rayStart, &eye, sizeof(eye)) || !safeRead(hr + off::HitResult_rayDir, &d, sizeof(d)))
+  if (!hr || !safeRead(hr + off::HitResult_rayStart, &eye, sizeof(eye)) || !safeRead(hr + off::HitResult_rayDir, &d, sizeof(d)) ||
+      !safeRead(hr + off::HitResult_type, &hitType, sizeof(hitType)) || !safeRead(hr + off::HitResult_pos, &hitPos, sizeof(hitPos)))
     return false;
   const float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
   if (!(len > 1e-4f) || !finite(eye)) return false;
@@ -194,22 +208,8 @@ bool aimRay(const char *levelRenderer, Vec3f &eye, Vec3f &dir) {
   return true;
 }
 
-// Ghost blocks the world already has right (same block type) are dropped from the hologram; checked twice a second
-// on the render thread through the level renderer's BlockSource, found by its class name.
-void refreshPlaced(const char *levelRenderer, const Structure &s) {
-  std::vector<uint64_t> pending;
-  bool full;
-  std::unordered_set<uint64_t> placed;
-  std::array<int, 3> origin;
-  View view;
-  {
-    std::lock_guard lock(gMu);
-    full = gFullCheck;
-    gFullCheck = false;
-    pending.swap(gPending);
-    placed = gPlaced, origin = gOrigin, view = gView;
-  }
-  if (!full && pending.empty()) return;  // nothing placed since the last check: no world reads at all
+// The world's BlockSource, found by its class name in the level renderer or its player (logged the first time).
+void *blockSource(const char *levelRenderer) {
   // The class is a BlockSource subclass, so match the name's ending; the renderer player is searched too.
   static const char *sourceOwner = nullptr;
   static int sourceField = -2;
@@ -232,16 +232,39 @@ void refreshPlaced(const char *levelRenderer, const Structure &s) {
     if (sourceField < 0 && gLog) gLog->warn("Hologram: no block source found, built blocks can't be hidden");
   }
   void *source = nullptr;
-  if (sourceField < 0 || !safeRead(sourceOwner + sourceField, &source, 8) || !source) return;
-  static std::unordered_map<std::string, uintptr_t> types;  // render thread only
-  auto typeOf = [&](const std::string &name) {
-    auto it = types.find(name);
-    if (it != types.end()) return it->second;
-    const HashedString hs(name);
-    const uintptr_t t = reinterpret_cast<uintptr_t>(gLookup(gRegistry(), &hs)) & 0x00FFFFFFFFFFFFFFULL;
-    types.emplace(name, t);
-    return t;
-  };
+  if (sourceField < 0 || !safeRead(sourceOwner + sourceField, &source, 8)) return nullptr;
+  return source;
+}
+
+// BlockType of a block name, untagged. Render thread only.
+uintptr_t typeOf(const std::string &name) {
+  static std::unordered_map<std::string, uintptr_t> types;
+  auto it = types.find(name);
+  if (it != types.end()) return it->second;
+  const HashedString hs(name);
+  const uintptr_t t = reinterpret_cast<uintptr_t>(gLookup(gRegistry(), &hs)) & 0x00FFFFFFFFFFFFFFULL;
+  types.emplace(name, t);
+  return t;
+}
+
+// Ghost blocks the world already has right (same block type) are dropped from the hologram; checked twice a second
+// on the render thread through the level renderer's BlockSource.
+void refreshPlaced(const char *levelRenderer, const Structure &s) {
+  std::vector<uint64_t> pending;
+  bool full;
+  std::unordered_set<uint64_t> placed;
+  std::array<int, 3> origin;
+  View view;
+  {
+    std::lock_guard lock(gMu);
+    full = gFullCheck;
+    gFullCheck = false;
+    pending.swap(gPending);
+    placed = gPlaced, origin = gOrigin, view = gView;
+  }
+  if (!full && pending.empty()) return;  // nothing placed since the last check: no world reads at all
+  void *source = blockSource(levelRenderer);
+  if (!source) return;
   auto matches = [&](int x, int y, int z, int32_t palette) {
     const BlockPos pos{x, y, z};
     const void *block = gGetBlock(source, pos);
@@ -355,6 +378,106 @@ void drawHover(void *sc, void *tess, void *mat, const std::array<int, 3> &cell, 
   submit(sc, tess, mat);
 }
 
+// A libc++ std::string at `at` that spells a "minecraft:" block name, or "". Both layouts are tried (short strings
+// inline, long ones behind a pointer), so this doesn't depend on which bit marks the layout in this build.
+std::string nameAt(const char *at) {
+  unsigned char hdr[24];
+  if (!safeRead(at, hdr, sizeof(hdr))) return {};
+  uint64_t size = 0, data = 0;
+  std::memcpy(&size, hdr + 8, 8), std::memcpy(&data, hdr + 16, 8);
+  struct Form {
+    const char *text;
+    size_t size;
+  };
+  const Form forms[] = {{at + 1, static_cast<size_t>(hdr[0] >> 1)}, {at + 1, static_cast<size_t>(hdr[0] & 0x7F)},
+                        {reinterpret_cast<const char *>(data & 0x00FFFFFFFFFFFFFFULL), static_cast<size_t>(size)}};
+  for (const Form &f : forms) {
+    if (f.size < 10 || f.size > 128) continue;
+    std::string s(f.size, '\0');
+    if (!safeRead(f.text, s.data(), f.size) || s.compare(0, 10, "minecraft:") != 0) continue;
+    if (std::all_of(s.begin(), s.end(), [](char c) { return c >= 0x20 && c < 0x7F; })) return s;
+  }
+  return {};
+}
+
+// The block name stored in a BlockType, cached per type: found by scanning the first 0x200 bytes once, then read at
+// the same offset. "" if the type has no such name.
+std::string blockName(uintptr_t type) {
+  static std::unordered_map<uintptr_t, std::string> names;  // render thread only
+  static int nameOffset = -1;
+  if (auto it = names.find(type); it != names.end()) return it->second;
+  const char *obj = reinterpret_cast<const char *>(type);
+  std::string name = nameOffset >= 0 ? nameAt(obj + nameOffset) : std::string();
+  for (int off = 0; nameOffset < 0 && name.empty() && off < 0x200; off += 8) {
+    name = nameAt(obj + off);
+    if (!name.empty()) {
+      nameOffset = off;
+      if (gLog) gLog->info("BE-Matica: WAILA name field at +{:#x}", off);
+    }
+  }
+  names.emplace(type, name);
+  return name;
+}
+
+// "minecraft:oak_planks" -> "Oak Planks".
+std::string displayName(const std::string &id) {
+  std::string out = id.substr(id.find(':') + 1);  // no ':' gives npos + 1 = 0, keeping the whole name
+  bool wordStart = true;
+  for (char &c : out) {
+    if (c == '_') c = ' ', wordStart = true;
+    else if (wordStart) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c))), wordStart = false;
+  }
+  return out;
+}
+
+// Looks at the block under the crosshair and publishes what it is when that or the structure's wish for the cell
+// changes. The world read happens every frame, the name and the listener call only on a change.
+void updateLook(const char *levelRenderer, bool aimed, int32_t hitType, const BlockPos &pos) {
+  std::shared_ptr<const Structure> structure;
+  std::array<int, 3> origin;
+  View view;
+  std::function<void(const LookInfo &)> listener;
+  {
+    std::lock_guard lock(gMu);
+    if (!gLookListener) return;
+    structure = gStructure, origin = gOrigin, view = gView, listener = gLookListener;
+  }
+  LookKey key;
+  key.structure = structure;
+  void *source = blockSource(levelRenderer);
+  if (aimed && hitType == 0 && source) {
+    const void *block = gGetBlock(source, pos);
+    const void *type = nullptr;
+    if (block && safeRead(static_cast<const char *>(block) + off::Block_blockType, &type, 8) && type) {
+      key.valid = true;
+      key.type = reinterpret_cast<uintptr_t>(type) & 0x00FFFFFFFFFFFFFFULL;
+      if (structure) key.palette = expectedAt(*structure, origin, view, {pos.x, pos.y, pos.z});
+    }
+  }
+  {
+    std::lock_guard lock(gMu);
+    if (key == gLookKey) return;
+    gLookKey = key;
+  }
+  LookInfo info;
+  if (key.valid) {
+    std::string id = blockName(key.type);
+    if (id.empty() && structure)  // no name in the game's block: match the structure's names instead
+      for (const auto &p : structure->palette)
+        if (typeOf(p.name) == key.type) {
+          id = p.name;
+          break;
+        }
+    info.valid = true;
+    info.name = id.empty() ? "Unknown block" : displayName(id);
+    if (key.palette >= 0) {
+      const std::string &want = structure->palette[key.palette].name;
+      info.inside = true, info.match = typeOf(want) == key.type, info.want = displayName(want);
+    }
+  }
+  listener(info);
+}
+
 void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject) {
   // The game can enter the detour before hook() has stored the original on the install thread.
   RenderLevelFn orig;
@@ -389,6 +512,11 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
     }
   }
   if (originListener) originListener(gReportedOrigin);
+  Vec3f eye, dir;
+  int32_t hitType = -1;
+  BlockPos hitPos{};
+  const bool aimed = aimRay(static_cast<const char *>(self), eye, dir, hitType, hitPos);
+  updateLook(static_cast<const char *>(self), aimed, hitType, hitPos);
   if (!mesh) return;
 
   // Materials are owned by the game; a MaterialPtr is "set" when its first word is non-null.
@@ -443,9 +571,7 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
       std::lock_guard lock(gMu);
       structure = gStructure, origin = gOrigin, view = gView;
     }
-    Vec3f eye, dir;
     std::array<int, 3> cell;
-    const bool aimed = aimRay(static_cast<const char *>(self), eye, dir);
     if (aimed && (dir.x != 0 || dir.z != 0)) {
       std::lock_guard lock(gMu);
       gForward = std::fabs(dir.x) > std::fabs(dir.z) ? std::array<int, 2>{dir.x > 0 ? 1 : -1, 0}
@@ -589,6 +715,11 @@ void setFill(bool on) { gFill = on; }
 void setProgressListener(std::function<void(size_t, size_t)> listener) {
   std::lock_guard lock(gMu);
   gProgress = std::move(listener);
+}
+void setLookListener(std::function<void(const LookInfo &)> listener) {
+  std::lock_guard lock(gMu);
+  gLookListener = std::move(listener);
+  gLookKey = {};
 }
 void checkPlaced(int x, int y, int z) {
   std::lock_guard lock(gMu);

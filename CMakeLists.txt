@@ -19,7 +19,7 @@ set(BLOCK_MAP "${CMAKE_CURRENT_SOURCE_DIR}/data/java_to_bedrock.tsv.gz")
 configure_file(src/block_map_data.S.in "${CMAKE_BINARY_DIR}/block_map_data.S" @ONLY)
 set_property(SOURCE "${CMAKE_BINARY_DIR}/block_map_data.S" APPEND PROPERTY OBJECT_DEPENDS "${BLOCK_MAP}")
 
-add_library(BEMatica SHARED src/main.cpp src/nbt.cpp src/mcstructure.cpp src/library.cpp src/materials_panel.cpp
+add_library(BEMatica SHARED src/main.cpp src/nbt.cpp src/mcstructure.cpp src/library.cpp src/materials_panel.cpp src/waila.cpp
             src/mesh.cpp src/hologram.cpp src/textured.cpp src/easyplace.cpp src/gzip.cpp src/blockmap.cpp src/litematic.cpp
             "${CMAKE_BINARY_DIR}/block_map_data.S")
 target_include_directories(BEMatica PRIVATE src)

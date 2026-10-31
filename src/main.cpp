@@ -4,6 +4,7 @@
 #include "library.hpp"
 #include "litematic.hpp"
 #include "materials_panel.hpp"
+#include "waila.hpp"
 
 #include <pl/Input.hpp>
 #include <pl/Mod.hpp>
@@ -29,6 +30,7 @@ namespace mm = pl::modmenu;
 constexpr const char *kModule = "bematica.main";
 // Its own module so the control panel can be switched on and off in the launcher.
 constexpr const char *kControlsModule = "bematica.controls";
+constexpr const char *kLookModule = "bematica.lookat";
 
 // The launcher app can always read its own folder on shared storage; Download needs "All files access".
 fs::path appStorageDir() {
@@ -69,6 +71,7 @@ public:
                     std::lock_guard lock(mu_);
                     enabled_ = on;
                     hologram::setVisible(enabled_ && hologramOn_);
+                    applyLookLocked();
                     syncPanelLocked();
                   })
                   .onConfigChanged([this](std::string_view, std::string_view key, std::string_view value) {
@@ -88,6 +91,14 @@ public:
              })
              .registerModule();
     if (!ok) ctx.logger().warn("BE-Matica: controls module registration failed");
+    ok = mm::ModuleBuilder(kLookModule, "BE-Matica Look-at")
+             .description("Card naming the block under the crosshair.")
+             .modId(ctx.id())
+             .defaultEnabled(true)
+             .hideInHudEditor(true)
+             .registerModule();
+    if (!ok) ctx.logger().warn("BE-Matica: look-at module registration failed");
+    waila_.init(kLookModule);
     panel_.init(kControlsModule, ctx.id(), [this](std::string_view key, std::string_view value) { onSetting(key, value); });
     hologram::setProgressListener([this](size_t built, size_t total) {
       panel_.setProgress(built, total);
@@ -103,6 +114,7 @@ public:
     hologram::setFill(fillOn_);
     hologram::setVisible(hologramOn_);
     textured::setEnabled(texturedOn_);
+    applyLookLocked();
     easyplace::setEnabled(easyPlaceOn_);
     hologram::setOriginListener([this](std::array<int, 3> origin) {
       std::lock_guard lock(mu_);
@@ -171,12 +183,15 @@ public:
   bool disable(pl::mod::ModContext &ctx) {
     hologram::setProgressListener(nullptr);
     hologram::setOriginListener(nullptr);
+    hologram::setLookListener(nullptr);
+    waila_.update({});
     panel_.shutdown();
     hologram::uninstall();
     easyplace::uninstall();
     mm::clearConfigSchema(kModule);
     mm::unregisterModule(kModule);
     mm::unregisterModule(kControlsModule);
+    mm::unregisterModule(kLookModule);
     ctx.logger().info("BE-Matica disabled");
     return true;
   }
@@ -247,6 +262,10 @@ private:
       status_ = "Hologram moved to you";
     } else if (onPlacementLocked(key, value)) {
       return;  // hologram-only change; the page stays as it is
+    } else if (key == "lookat") {
+      lookOn_ = value == "true" || value == "1";
+      applyLookLocked();
+      saveSettingsLocked();
     } else if (key == "outlines" || key == "fill") {
       const bool on = value == "true" || value == "1";
       (key == "outlines" ? outlinesOn_ : fillOn_) = on;
@@ -353,6 +372,9 @@ private:
                   .description = "Bring the structure back where it was when the game restarts or you rejoin.",
                   .section = "Placement", .type = T::Toggle, .defaultValue = "true",
                   .currentValue = flag(rememberOn_), .hasCurrentValue = true});
+    schema.node(N{.id = "lookat", .key = "lookat", .category = "settings", .title = "Look-at info",
+                  .description = "Name the block under the crosshair, and what the structure wants in its place.",
+                  .type = T::Toggle, .defaultValue = "true", .currentValue = flag(lookOn_), .hasCurrentValue = true});
     if (loadedName_.empty()) return;
     static constexpr const char *kAxes[][2] = {{"origin_x", "X"}, {"origin_y", "Y"}, {"origin_z", "Z"}};
     for (int k = 0; k < 3; ++k)
@@ -662,6 +684,7 @@ private:
       else if (key == "autolock") autoLockOn_ = value == "1";
       else if (key == "autolock_pct") autoLockPct_ = std::clamp(std::atoi(value.c_str()), 1, 100);
       else if (key == "remember") rememberOn_ = value == "1";
+      else if (key == "lookat") lookOn_ = value == "1";
     }
   }
 
@@ -672,13 +695,26 @@ private:
                                   << origin_[2] << "\nrotation=" << view_.rotation << "\nmirror=" << view_.mirror
                                   << "\nlayers=" << static_cast<int>(view_.layers) << "\nlayer=" << view_.layer
                                   << "\nlocked=" << locked_ << "\nautolock=" << autoLockOn_
-                                  << "\nautolock_pct=" << autoLockPct_ << "\nremember=" << rememberOn_ << "\n";
+                                  << "\nautolock_pct=" << autoLockPct_ << "\nremember=" << rememberOn_
+                                  << "\nlookat=" << lookOn_ << "\n";
   }
 
   void syncPanelLocked() { panel_.setVisible(controls_); }
 
+  // The look-at card reads the block under the crosshair only while it is on and BE-Matica is enabled.
+  void applyLookLocked() {
+    if (lookOn_ && enabled_) {
+      hologram::setLookListener([this](const hologram::LookInfo &info) { waila_.update(info); });
+    } else {
+      hologram::setLookListener(nullptr);
+      waila_.update({});
+    }
+  }
+
   pl::mod::ModContext *ctx_ = nullptr;
   MaterialsPanel panel_;
+  LookCard waila_;
+  bool lookOn_ = true;
   bool hologramOk_ = false, hologramOn_ = true, texturedOn_ = false, outlinesOn_ = true, fillOn_ = true;
   bool easyPlaceOk_ = false, easyPlaceOn_ = false, airPlaceOn_ = true, autoSelectOn_ = true;
   int opacity_ = 45;

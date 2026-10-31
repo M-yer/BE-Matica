@@ -39,6 +39,16 @@ void checkPlaced(int x, int y, int z);
 // Called on the render thread whenever the count of correctly built blocks (of those shown) changes.
 void setProgressListener(std::function<void(size_t built, size_t total)> listener);
 
+// What the player is looking at, for the look-at card. `want` is the structure's block at that cell when `inside`.
+struct LookInfo {
+  bool valid = false;  // false when nothing is under the crosshair, or it can't be read
+  std::string name;    // display name of the block under the crosshair ("Air" for air)
+  std::string want;
+  bool inside = false, match = false;
+};
+// Called on the render thread when the block under the crosshair changes. Null turns the reads off.
+void setLookListener(std::function<void(const LookInfo &info)> listener);
+
 // What's shown right now, for Easy Place. `structure` is null when nothing is shown.
 struct Snapshot {
   std::shared_ptr<const Structure> structure;
