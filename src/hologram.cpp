@@ -292,6 +292,18 @@ void refreshPlaced(const char *levelRenderer, const Structure &s) {
         }
   }
   auto sx = [](uint64_t v) { return static_cast<int>(v & 0x100000 ? static_cast<int64_t>(v) - 0x200000 : static_cast<int64_t>(v)); };
+  if (!full) {  // built cells the player broke since come back as ghosts
+    for (auto it = placed.begin(); it != placed.end();) {
+      const int x = sx(*it >> 42), y = sx((*it >> 21) & 0x1FFFFF), z = sx(*it & 0x1FFFFF);
+      const int32_t want = expectedAt(s, origin, view, {x, y, z});
+      if (want >= 0 && matches(x, y, z, want)) {
+        ++it;
+      } else {
+        it = placed.erase(it);
+        changed = true;
+      }
+    }
+  }
   for (uint64_t key : pending) {  // just placed
     const int x = sx(key >> 42), y = sx((key >> 21) & 0x1FFFFF), z = sx(key & 0x1FFFFF);
     const int32_t want = expectedAt(s, origin, view, {x, y, z});
