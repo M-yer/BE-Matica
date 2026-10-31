@@ -44,6 +44,10 @@ constexpr const char *ItemBlockType =
     "DF 08";
 // Player's item in a hand (0 = main hand)
 constexpr const char *HandItem = "28 1C 00 12 1F 05 00 71 ? ? ? ? 08 00 40 F9 01 39 41 F9 20 00 1F D6";
+// PlayerInventory::selectSlot(int slot, ContainerID): switches the held hotbar slot like a tap on the hotbar (0 = inventory)
+constexpr const char *SelectSlot =
+    "FD 7B BB A9 FC 67 01 A9 F8 5F 02 A9 F6 57 03 A9 F4 4F 04 A9 FD 03 00 91 FF C3 09 D1 56 D0 3B D5 C8 16 40 F9 5F 1C 00 "
+    "72 A8 83 1F F8 60 00 00 54";
 // Returns the global block registry (the getter sits right before BlockLookupByName)
 constexpr const char *BlockRegistry = "? ? ? ? ? ? ? ? C0 03 5F D6 E2 03 1F 2A E3 03 1F 2A E4 03 1F 2A";
 // Looks up a BlockType by its full name (HashedString); old names like minecraft:grass resolve too
@@ -84,6 +88,8 @@ constexpr unsigned Level_vtGetHitResult = 0xA80; // vtable byte offset
 constexpr unsigned HitResult_rayStart = 0x0, HitResult_rayDir = 0xC;  // Vec3 each: the player's aim ray
 constexpr unsigned HitResult_type = 0x18, HitResult_face = 0x1C, HitResult_pos = 0x20, HitResult_hitPos = 0x2C;
 constexpr unsigned Block_blockType = 0x68;
+constexpr unsigned PlayerInventory_container = 0xB8;  // selectSlot reads it for the slot count and getItem
+constexpr unsigned Container_vtGetItem = 0x40;  // vtable byte offset: ItemStack* getItem(int slot)
 }  // namespace off
 
 enum Primitive : int { QuadList = 1, LineList = 4 };
@@ -117,6 +123,7 @@ using BuildBlockFn = bool (*)(void *gameMode, const BlockPos *pos, uint8_t face,
 using UseItemFn = bool (*)(void *gameMode, void *itemStack, uint32_t flag);
 using GetBlockFn = void *(*)(void *blockSource, const BlockPos &pos);
 using ItemBlockTypeFn = BlockTypeRef (*)(const void *itemStack);
+using SelectSlotFn = bool (*)(void *playerInventory, int slot, uint8_t containerId);
 using HandItemFn = const void *(*)(void *player, uint8_t hand);
 using BlockRegistryFn = void *(*)();
 using BlockLookupFn = void *(*)(void *registry, const HashedString *name);

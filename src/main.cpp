@@ -121,6 +121,7 @@ public:
       }
     }
     easyplace::setAirPlace(airPlaceOn_);
+    easyplace::setAutoSelect(autoSelectOn_);
     {
       std::lock_guard lock(mu_);
       syncPanelLocked();
@@ -205,6 +206,11 @@ private:
       easyplace::setEnabled(easyPlaceOn_);
       saveSettingsLocked();
       syncLayerLocked();
+      return;
+    } else if (key == "autoselect") {
+      autoSelectOn_ = value == "true" || value == "1";
+      easyplace::setAutoSelect(autoSelectOn_);
+      saveSettingsLocked();
       return;
     } else if (key == "airplace") {
       airPlaceOn_ = value == "true" || value == "1";
@@ -546,6 +552,10 @@ private:
                       .description = "Place ghost blocks in mid-air, even with nothing next to them.",
                       .type = T::Toggle, .defaultValue = "true", .currentValue = airPlaceOn_ ? "true" : "false",
                       .hasCurrentValue = true});
+        schema.node(N{.id = "autoselect", .key = "autoselect", .category = "easyplace", .title = "Auto-select block",
+                      .description = "Switch to the hotbar slot holding the block a ghost block needs.",
+                      .type = T::Toggle, .defaultValue = "true", .currentValue = autoSelectOn_ ? "true" : "false",
+                      .hasCurrentValue = true});
         schema.node(N{.id = "easyplace_help", .category = "easyplace", .title = "How it works",
                       .description = "Aim at a ghost block, or through it at the ground behind, and tap to place. "
                                      "Taps outside the hologram place blocks normally.\n"
@@ -636,6 +646,7 @@ private:
     for (std::string key, value; std::getline(in, key, '=') && std::getline(in, value);) {
       if (key == "easyplace") easyPlaceOn_ = value == "1";
       else if (key == "airplace") airPlaceOn_ = value == "1";
+      else if (key == "autoselect") autoSelectOn_ = value == "1";
       else if (key == "hologram") hologramOn_ = value == "1";
       else if (key == "textured") texturedOn_ = value == "1";
       else if (key == "outlines") outlinesOn_ = value == "1";
@@ -655,7 +666,7 @@ private:
   }
 
   void saveSettingsLocked() {
-    std::ofstream(settingsFile()) << "easyplace=" << easyPlaceOn_ << "\nairplace=" << airPlaceOn_ << "\nhologram=" << hologramOn_ << "\ntextured=" << texturedOn_
+    std::ofstream(settingsFile()) << "easyplace=" << easyPlaceOn_ << "\nairplace=" << airPlaceOn_ << "\nautoselect=" << autoSelectOn_ << "\nhologram=" << hologramOn_ << "\ntextured=" << texturedOn_
                                   << "\noutlines=" << outlinesOn_ << "\nfill=" << fillOn_ << "\nopacity=" << opacity_ << "\n"
                                   << "structure=" << loadedName_ << "\norigin=" << origin_[0] << ',' << origin_[1] << ','
                                   << origin_[2] << "\nrotation=" << view_.rotation << "\nmirror=" << view_.mirror
@@ -669,7 +680,7 @@ private:
   pl::mod::ModContext *ctx_ = nullptr;
   MaterialsPanel panel_;
   bool hologramOk_ = false, hologramOn_ = true, texturedOn_ = false, outlinesOn_ = true, fillOn_ = true;
-  bool easyPlaceOk_ = false, easyPlaceOn_ = false, airPlaceOn_ = true;
+  bool easyPlaceOk_ = false, easyPlaceOn_ = false, airPlaceOn_ = true, autoSelectOn_ = true;
   int opacity_ = 45;
   View view_;
   // Placement kept across launches: the structure's world origin, and the name/view read at start-up.

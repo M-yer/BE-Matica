@@ -32,11 +32,13 @@ constexpr float kReach = 6.0f;  // blocks; how far a tap into the air can reach 
 GetBlockFn gGetBlock = nullptr;
 ItemBlockTypeFn gItemBlockType = nullptr;
 HandItemFn gHandItem = nullptr;
+SelectSlotFn gSelectSlot = nullptr;
 BlockRegistryFn gRegistry = nullptr;
 BlockLookupFn gLookup = nullptr;
 
 std::atomic_bool gEnabled{false};
 std::atomic_bool gAirPlace{true};
+std::atomic_bool gAutoSelect{true};
 std::function<void(const std::string &)> gMessage;
 std::function<void()> gLayerDone;
 pl::log::Logger *gLog = nullptr;
@@ -97,7 +99,7 @@ int findField(const void *obj, unsigned from, unsigned to, std::string_view suff
 }
 
 struct Fields {
-  int level = -1, dimension = -1, blockSource = -1;
+  int level = -1, dimension = -1, blockSource = -1, inventory = -1;
 };
 
 const Fields &fields(void *player) {
@@ -108,10 +110,11 @@ const Fields &fields(void *player) {
   f.dimension = findField(player, 0x100, 0x400, "Dimension");
   void *dimension = f.dimension >= 0 ? at<void *>(player, f.dimension) : nullptr;
   f.blockSource = dimension ? findField(dimension, 0, 0x400, "BlockSource") : -1;
+  f.inventory = findField(player, 0x100, 0x800, "PlayerInventory");  // optional: only auto-select needs it
   found = f.level >= 0 && f.dimension >= 0 && f.blockSource >= 0;
   if (gLog)
-    gLog->info("EasyPlace fields: player is {}, level @{:#x}, dimension @{:#x}, block source @{:#x}", className(player),
-               f.level, f.dimension, f.blockSource);
+    gLog->info("EasyPlace fields: player is {}, level @{:#x}, dimension @{:#x}, block source @{:#x}, inventory @{:#x}",
+               className(player), f.level, f.dimension, f.blockSource, f.inventory);
   return f;
 }
 
@@ -283,6 +286,37 @@ bool wantsLiquid(const Context &ctx, const Cell &target) {
   return want.find("water") != std::string::npos || want.find("lava") != std::string::npos;
 }
 
+// The hotbar slot (0-8) holding `expected`, or -1. Reads go through the inventory's own container.
+int hotbarSlotWith(void *player, const void *expected) {
+  const int field = fields(player).inventory;
+  void *inventory = field >= 0 ? at<void *>(player, field) : nullptr;
+  if (!inventory || className(inventory) != "PlayerInventory") return -1;
+  void *container = nullptr, *vtable = nullptr, *getItemPtr = nullptr;
+  if (!safeRead(static_cast<char *>(inventory) + off::PlayerInventory_container, &container, 8) || !container ||
+      className(container).empty() || !safeRead(container, &vtable, 8) || !vtable ||
+      !safeRead(static_cast<char *>(vtable) + off::Container_vtGetItem, &getItemPtr, 8) || !getItemPtr)
+    return -1;
+  using GetItemFn = const void *(*)(void *, int);
+  auto getItem = reinterpret_cast<GetItemFn>(getItemPtr);
+  for (int slot = 0; slot < 9; ++slot) {
+    const void *stack = getItem(container, slot);
+    const void *type = stack ? gItemBlockType(stack).blockType : nullptr;
+    if (type && untag(type) == untag(expected)) return slot;
+  }
+  return -1;
+}
+
+// Switches the held slot to one that holds `expected`, as a tap on the hotbar would (the game tells the server).
+bool selectFromHotbar(void *player, const void *expected) {
+  if (!gSelectSlot) return false;
+  const int slot = hotbarSlotWith(player, expected);
+  if (slot < 0) return false;
+  void *inventory = at<void *>(player, fields(player).inventory);
+  const bool ok = gSelectSlot(inventory, slot, 0);
+  trace("EasyPlace: auto-select hotbar slot {} -> {}", slot, ok ? "ok" : "rejected");
+  return ok;
+}
+
 // The held block must be the one the structure wants at `target`.
 bool holdingRight(const Context &ctx, const Cell &target, uint8_t hand) {
   const std::string &want = ctx.h.structure->palette[expectedAt(*ctx.h.structure, ctx.h.origin, ctx.h.view, target)].name;
@@ -293,6 +327,11 @@ bool holdingRight(const Context &ctx, const Cell &target, uint8_t hand) {
     trace("EasyPlace unknown block: '{}'", want);
     say("Unknown block: " + shortName(want));
     return false;
+  }
+  if ((!held || untag(held) != untag(expected)) && hand == 0 && gAutoSelect.load(std::memory_order_relaxed) &&
+      selectFromHotbar(ctx.player, expected)) {
+    stack = gHandItem(ctx.player, hand);
+    held = stack ? gItemBlockType(stack).blockType : nullptr;
   }
   if (!held || untag(held) != untag(expected)) {
     say("Hold " + shortName(want));
@@ -413,6 +452,7 @@ bool install(pl::log::Logger &log, std::string &error) {
       {"BaseUseItem", sig::BaseUseItem, &use},
       {"BlockSourceGetBlock", sig::BlockSourceGetBlock, reinterpret_cast<void **>(&gGetBlock)},
       {"ItemBlockType", sig::ItemBlockType, reinterpret_cast<void **>(&gItemBlockType)},
+      {"SelectSlot", sig::SelectSlot, reinterpret_cast<void **>(&gSelectSlot)},
       {"HandItem", sig::HandItem, reinterpret_cast<void **>(&gHandItem)},
       {"BlockRegistry", sig::BlockRegistry, reinterpret_cast<void **>(&gRegistry)},
       {"BlockLookupByName", sig::BlockLookupByName, reinterpret_cast<void **>(&gLookup)},
@@ -422,6 +462,10 @@ bool install(pl::log::Logger &log, std::string &error) {
   const auto found = pl::memory::resolveSignatures(sigs, "libminecraftpe.so");
   for (const auto &w : wants) {
     const auto it = found.find(w.sig);
+    if ((it == found.end() || !it->second) && w.out == reinterpret_cast<void **>(&gSelectSlot)) {
+      log.warn("BE-Matica: {} not found, auto-select disabled", w.name);  // optional: only auto-select needs it
+      continue;
+    }
     if (it == found.end() || !it->second) {
       error = std::string("game function not found: ") + w.name;
       return false;
@@ -469,5 +513,6 @@ void uninstall() {
 
 void setEnabled(bool enabled) { gEnabled = enabled; }
 void setAirPlace(bool on) { gAirPlace = on; }
+void setAutoSelect(bool on) { gAutoSelect = on; }
 
 }  // namespace bematica::easyplace
