@@ -16,6 +16,7 @@
 #include <cctype>
 #include <atomic>
 #include <chrono>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <cmath>
@@ -79,6 +80,8 @@ struct LookKey {
   bool operator==(const LookKey &o) const = default;
 };
 LookKey gLookKey;
+LookInfo gLookInfo;  // last published, re-sent periodically
+std::chrono::steady_clock::time_point gLookSent;
 std::function<void(const LookInfo &)> gLookListener;  // guarded by gMu
 
 bool finite(const Vec3f &v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
@@ -510,10 +513,21 @@ void updateLook(const char *levelRenderer, bool aimed, int32_t hitType, const Bl
       if (structure) key.palette = expectedAt(*structure, origin, view, {pos.x, pos.y, pos.z});
     }
   }
+  std::optional<LookInfo> again;
   {
     std::lock_guard lock(gMu);
-    if (key == gLookKey) return;
-    gLookKey = key;
+    // The launcher drops HUD drawings that aren't re-submitted, so repeat the unchanged card a few times a second.
+    if (key == gLookKey) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now - gLookSent < std::chrono::milliseconds(250)) return;
+      gLookSent = now, again = gLookInfo;
+    } else {
+      gLookKey = key;
+    }
+  }
+  if (again) {
+    listener(*again);
+    return;
   }
   LookInfo info;
   if (key.ghost) {
@@ -541,6 +555,10 @@ void updateLook(const char *levelRenderer, bool aimed, int32_t hitType, const Bl
       const std::string &want = structure->palette[key.palette].name;
       info.inside = true, info.match = typeOf(want) == key.type, info.want = displayName(want);
     }
+  }
+  {
+    std::lock_guard lock(gMu);
+    gLookInfo = info, gLookSent = std::chrono::steady_clock::now();
   }
   listener(info);
 }

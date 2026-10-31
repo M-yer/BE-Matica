@@ -64,6 +64,11 @@ constexpr const char *ItemStackCopy =
 constexpr const char *ServerPlayerTick =
     "FF 83 03 D1 FD 7B 09 A9 F9 53 00 F9 F8 5F 0B A9 F6 57 0C A9 F4 4F 0D A9 FD 43 02 91 57 D0 3B D5 F3 03 00 AA 00 20 "
     "00 91 E8 16 40 F9";
+// Player::getPlayerGameType(): reads ActorGameTypeComponent from the ECS (-1 if absent); 5 (default) is resolved
+// through the Level's vtable slot 0x468. 0 survival, 1 creative, 2 adventure, 6 spectator.
+constexpr const char *PlayerGameType =
+    "FD 7B BE A9 F3 0B 00 F9 FD 03 00 91 F3 03 00 AA 00 20 00 91 ? ? ? ? 1F 14 00 71 01 01 00 54 E0 03 13 AA ? ? ? ? 08 "
+    "00 40 F9 01 35 42 F9 F3 0B 40 F9 FD 7B C2 A8 20 00 1F D6";
 // Returns the global block registry (the getter sits right before BlockLookupByName)
 constexpr const char *BlockRegistry = "? ? ? ? ? ? ? ? C0 03 5F D6 E2 03 1F 2A E3 03 1F 2A E4 03 1F 2A";
 // Looks up a BlockType by its full name (HashedString); old names like minecraft:grass resolve too
@@ -181,6 +186,7 @@ using ItemStackHasItemFn = bool (*)(const void *itemStack);
 using ItemStackCopyFn = void *(*)(void *dst, const void *src);
 using ServerTickFn = uint64_t (*)(void *serverPlayer, void *a1, void *a2, void *a3);
 using SetItemFn = void (*)(void *container, int slot, const void *itemStack);
+using PlayerGameTypeFn = int (*)(void *player);
 using PickBlockFn = void (*)(void *player, const void *hitResult, bool withData);
 using HandItemFn = const void *(*)(void *player, uint8_t hand);
 using BlockRegistryFn = void *(*)();
