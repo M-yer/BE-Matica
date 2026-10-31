@@ -35,6 +35,7 @@ HandItemFn gHandItem = nullptr;
 SelectSlotFn gSelectSlot = nullptr;
 ItemStackHasItemFn gItemStackHasItem = nullptr;
 PickBlockFn gPickBlock = nullptr;
+PlayerGameTypeFn gGameType = nullptr;
 ItemStackCopyFn gItemStackCopy = nullptr;
 std::atomic<ServerTickFn> gServerTickOrig{nullptr};
 void *gServerTickTarget = nullptr;
@@ -446,12 +447,13 @@ bool pickSource(const World &world, const Vec3f &eye, const void *expected, Bloc
   return false;
 }
 
-// The player's game type has not been found in the game (static RE of 1.26.60.4 failed), so the mode is unknown and
-// treated as survival: nothing that conjures items runs.
-bool creativeMode(const void *) {
-  static std::atomic_bool logged{false};
-  if (!logged.exchange(true)) trace("EasyPlace: game mode unknown");
-  return false;
+// Player::getPlayerGameType; anything but creative (including unknown/default) keeps the survival-safe paths.
+bool creativeMode(void *player) {
+  static std::atomic_int last{-2};
+  const int type = gGameType && player ? gGameType(player) : -1;
+  if (last.exchange(type) != type)
+    trace("EasyPlace: game mode {}", type == 1 ? "creative" : type == 0 ? "survival" : type == 2 ? "adventure" : "unknown");
+  return type == 1;
 }
 
 bool autoPick(const Context &ctx, const void *expected, const std::string &want) {
@@ -645,6 +647,7 @@ bool install(pl::log::Logger &log, std::string &error) {
       {"ItemBlockType", sig::ItemBlockType, reinterpret_cast<void **>(&gItemBlockType)},
       {"SelectSlot", sig::SelectSlot, reinterpret_cast<void **>(&gSelectSlot)},
       {"ItemStackHasItem", sig::ItemStackHasItem, reinterpret_cast<void **>(&gItemStackHasItem)},
+      {"PlayerGameType", sig::PlayerGameType, reinterpret_cast<void **>(&gGameType)},
       {"PickBlock", sig::PickBlock, reinterpret_cast<void **>(&gPickBlock)},
       {"ItemStackCopy", sig::ItemStackCopy, reinterpret_cast<void **>(&gItemStackCopy)},
       {"ServerPlayerTick", sig::ServerPlayerTick, &serverTick},
@@ -660,6 +663,7 @@ bool install(pl::log::Logger &log, std::string &error) {
     const bool optional = w.out == reinterpret_cast<void **>(&gSelectSlot) ||
                           w.out == reinterpret_cast<void **>(&gItemStackHasItem) ||
                           w.out == reinterpret_cast<void **>(&gPickBlock) ||
+                          w.out == reinterpret_cast<void **>(&gGameType) ||
                           w.out == reinterpret_cast<void **>(&gItemStackCopy) || w.out == &serverTick;
     if ((it == found.end() || !it->second) && optional) {
       log.warn("BE-Matica: {} not found, {} disabled", w.name,
