@@ -19,11 +19,9 @@ void uninstall();
 void setEnabled(bool on);
 bool enabled();
 
-// Draws `blocks` relative to the camera. `levelRenderer` holds the block texture.
+// Draws the blocks near the camera relative to it. `levelRenderer` holds the block atlas and the ClientInstance.
 // Returns false when it could not draw (pieces missing, texture not found), so the caller can fall back to boxes.
 bool draw(void *screenContext, void *tess, const char *levelRenderer, const char *lrp, const std::vector<BlockCell> &blocks,
           const Structure &s, const Vec3f &cam);
-// Debug: switch to the next game texture candidate; returns a line describing it.
-std::string nextTexture();
 
 }  // namespace bematica::textured

@@ -206,8 +206,6 @@ private:
     } else if (key == "refresh") {
       scanLocked();
       status_ = files_.empty() ? "No structures yet" : std::to_string(files_.size()) + " structures found";
-    } else if (key == "texture_next") {
-      status_ = textured::nextTexture();
     } else if (key == "textured") {
       texturedOn_ = value == "true" || value == "1";
       textured::setEnabled(texturedOn_);
@@ -554,16 +552,11 @@ private:
       schema.node(N{.id = "hologram", .key = "hologram", .category = "main", .title = "Show hologram",
                     .type = T::Toggle, .defaultValue = "true", .currentValue = hologramOn_ ? "true" : "false",
                     .hasCurrentValue = true});
-      if (false)  // experimental textured hologram is disabled in code for now (see textured.cpp)
       schema.node(N{.id = "textured", .key = "textured", .category = "main", .title = "Real block textures (experimental)",
-                    .description = "Draw ghost blocks with the game's own models and textures. Hold any block once so "
-                                   "the game shows its textures. Turn off if anything looks wrong.",
+                    .description = "Draw the ghost blocks near you (about 8 blocks) with the game's own models and "
+                                   "textures. Turn off if anything looks wrong.",
                     .type = T::Toggle, .defaultValue = "false", .currentValue = texturedOn_ ? "true" : "false",
                     .hasCurrentValue = true});
-      if (false && texturedOn_)
-        schema.node(N{.id = "texture_next", .key = "texture_next", .category = "main", .title = "Cycle textures (debug)",
-                      .description = "Starts or stops switching the ghost blocks to the next game texture every 4 seconds.",
-                      .type = T::Button});
       if (easyPlaceOk_) {
         schema.node(N{.id = "easyplace", .key = "easyplace", .category = "easyplace", .title = "Easy Place",
                       .description = "Tap where a ghost block is to place it there. Only the right block is "
