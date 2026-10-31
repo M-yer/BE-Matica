@@ -74,14 +74,14 @@ void LookCard::update(const hologram::LookInfo &info) {
   if (info.valid) {
     const auto surface = mm::getHudSurfaceSize();
     const float sh = surface.height > 0 ? surface.height : 1080, sw = surface.width > 0 ? surface.width : 2400;
-    // Hugs the top edge; two lines end near 9%, well above the Easy Place toast (18%).
+    // Just under the top buttons (higher gets clipped on device); ends above the Easy Place toast (18%).
     const float font = sh * 0.02f, pad = font * 0.6f, lineH = font * 1.35f;
     const std::string wants = !info.note.empty() ? info.note : info.match ? "Wants: " + info.want + " ✓" : "Wants: " + info.want;
     float w = textWidth(info.name, font);
     if (info.inside) w = std::max(w, textWidth(wants, font));
     w += font * 1.6f;
     const float h = pad * 2 + font + (info.inside ? lineH : 0);
-    const float x = (sw - w) / 2, y = sh * 0.015f;
+    const float x = (sw - w) / 2, y = sh * 0.085f;
     const float edge = std::max(1.0f, std::round(font * 0.06f));
     card(cmds, x, y, w, h, font * 0.6f, edge, kPanel, kBorder);
     text(cmds, x + (w - textWidth(info.name, font)) / 2, y + pad, font, kText, info.name);
