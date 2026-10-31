@@ -80,7 +80,8 @@ constexpr const char *BlockChangeContext =
 // BlockSource::setBlock(pos, block, flags, ActorBlockSyncMessage*, BlockChangeContext&): vtable slot 0xF8. The slot is
 // compared with this code's address before it is called.
 constexpr const char *BlockSourceSetBlock =
-    "FF 43 01 D1 FD 7B 02 A9 F5 1B 00 F9 F4 4F 04 A9 FD 83 00 91 55 D0 3B D5 E6 03 05 AA E5 03 04 AA";
+    "FF 43 01 D1 FD 7B 02 A9 F5 1B 00 F9 F4 4F 04 A9 FD 83 00 91 55 D0 3B D5 E6 03 05 AA E5 03 04 AA A8 16 40 F9 A8 "
+    "83 1F F8 FF FF 00 A9 E4 23 00 91 ? ? ? 94 F4 0B 40 F9 F3 03 00 2A";
 
 // Textured hologram (experimental)
 // BlockTessellator::BlockTessellator(BlockSource*) — the object is kBlockTessellatorSize bytes
