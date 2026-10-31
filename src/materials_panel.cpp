@@ -1,3 +1,4 @@
+#include <cstring>
 #include "materials_panel.hpp"
 
 #include <pl/ModMenu.hpp>
@@ -199,10 +200,21 @@ void text(std::vector<mm::DrawCommand> &cmds, float x, float y, float size, uint
 }
 
 // Rough width of a label; multi-byte UTF-8 characters count once.
+// The launcher's font is proportional, so labels are centred with rough per-character advances (in ems,
+// measured from on-screen labels).
 float textWidth(const std::string &s, float font) {
-  size_t n = 0;
-  for (unsigned char c : s) n += (c & 0xC0) != 0x80;
-  return font * 0.55f * n;
+  float em = 0;
+  for (unsigned char c : s) {
+    if ((c & 0xC0) == 0x80) continue;  // UTF-8 continuation byte
+    if (std::strchr("ijl|.,:;!'", c)) em += 0.25f;
+    else if (c == ' ') em += 0.25f;
+    else if (std::strchr("ftrI", c)) em += 0.34f;
+    else if (std::strchr("mwMW", c)) em += 0.85f;
+    else if (c >= 'A' && c <= 'Z') em += 0.65f;
+    else if (c >= 0x80) em += 0.4f;  // the symbols used here (degree sign, arrows) are narrow
+    else em += 0.53f;
+  }
+  return font * em;
 }
 
 enum class Icon { List, Move, Up, Down, Left, Right, Lock };
