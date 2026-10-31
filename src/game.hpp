@@ -60,6 +60,11 @@ constexpr const char *PickBlock =
 constexpr const char *ItemStackCopy =
     "FD 7B BE A9 F3 0B 00 F9 FD 03 00 91 F3 03 00 AA 08 00 00 94 28 B1 01 D0 08 E1 3F 91 68 06 08 F8 E0 03 13 AA F3 0B "
     "40 F9 FD 7B C2 A8 29 62 E4 17 FF 43 01 D1";
+// ItemStack::ItemStack(const Block&, int count, const CompoundTag*): constructs in place (0x98 bytes). The bl to the
+// ItemStackBase ctor is kept exact: it is what tells this ctor from its sibling ItemStack ctors.
+constexpr const char *ItemStackFromBlock =
+    "FD 7B BE A9 F3 0B 00 F9 FD 03 00 91 F3 03 00 AA AD F7 FF 97 ? ? ? ? ? ? ? ? 68 06 08 F8 E0 03 13 AA F3 0B 40 F9 FD "
+    "7B C2 A8 4D 62 E4 17";
 // ServerPlayer's override of Player vtable slot 0xC8; runs on the server thread, `this` is the ServerPlayer
 constexpr const char *ServerPlayerTick =
     "FF 83 03 D1 FD 7B 09 A9 F9 53 00 F9 F8 5F 0B A9 F6 57 0C A9 F4 4F 0D A9 FD 43 02 91 57 D0 3B D5 F3 03 00 AA 00 20 "
@@ -174,6 +179,7 @@ using ItemBlockTypeFn = BlockTypeRef (*)(const void *itemStack);
 using SelectSlotFn = bool (*)(void *playerInventory, int slot, uint8_t containerId);
 using ItemStackHasItemFn = bool (*)(const void *itemStack);
 using ItemStackCopyFn = void *(*)(void *dst, const void *src);
+using ItemStackFromBlockFn = void *(*)(void *dst, const void *block, int count, const void *tag);
 using ServerTickFn = uint64_t (*)(void *serverPlayer, void *a1, void *a2, void *a3);
 using SetItemFn = void (*)(void *container, int slot, const void *itemStack);
 using PlayerGameTypeFn = int (*)(void *player);

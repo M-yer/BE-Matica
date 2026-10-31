@@ -37,6 +37,7 @@ ItemStackHasItemFn gItemStackHasItem = nullptr;
 PickBlockFn gPickBlock = nullptr;
 PlayerGameTypeFn gGameType = nullptr;
 ItemStackCopyFn gItemStackCopy = nullptr;
+ItemStackFromBlockFn gItemStackFromBlock = nullptr;
 std::atomic<ServerTickFn> gServerTickOrig{nullptr};
 void *gServerTickTarget = nullptr;
 BlockRegistryFn gRegistry = nullptr;
@@ -351,6 +352,8 @@ struct MoveJob {
   uintptr_t expected = 0;
   std::array<uintptr_t, 36> snapshot{};  // block type per slot of the local inventory, to find this player's ServerPlayer
   std::string want;
+  bool inject = false;          // creative-inject: conjure `block` into the hotbar instead of moving a stack
+  const void *block = nullptr;  // the wanted type's default Block
 };
 MoveJob gMove;
 std::atomic<uintptr_t> gMoveFailedFor{0};  // type the last move could not do: later taps fall through to pick-block
@@ -378,7 +381,8 @@ void runMoveJob(void *serverPlayer) {
   const auto finish = [&](bool ok) {
     if (!ok) gMoveFailedFor.store(gMove.expected, std::memory_order_relaxed);
     else gMoveFailedFor.store(0, std::memory_order_relaxed);
-    trace("EasyPlace: auto-pick {} via inventory-move -> {}", shortName(gMove.want), ok ? "ok" : "failed");
+    trace("EasyPlace: auto-pick {} via {} -> {}", shortName(gMove.want), gMove.inject ? "creative-inject" : "inventory-move",
+          ok ? "ok" : "failed");
     gMove.state.store(0, std::memory_order_release);
   };
   InventoryView sv;
@@ -386,7 +390,8 @@ void runMoveJob(void *serverPlayer) {
   for (int slot = 0; slot < 36; ++slot)
     if (slotType(sv, slot) != gMove.snapshot[slot]) return;  // another player's inventory
   int source = -1, target = -1;
-  for (int slot = 9; slot < 36 && source < 0; ++slot)
+  if (!gMove.inject)
+    for (int slot = 9; slot < 36 && source < 0; ++slot)
     if (slotType(sv, slot) == gMove.expected) source = slot;
   for (int slot = 0; slot < 9 && target < 0; ++slot)
     if (!stackHasItem(itemAt(sv, slot))) target = slot;
@@ -394,9 +399,17 @@ void runMoveJob(void *serverPlayer) {
                      target < 0 || target >= 9))
     target = -1;
   const SetItemFn setItem = setItemOf(sv);
-  if (source < 0 || target < 0 || !setItem || !gItemStackCopy) return finish(false);
   alignas(16) unsigned char tmp[off::ItemStack_size + 16];
   void *vtable = nullptr, *dtor = nullptr;
+  if (gMove.inject) {
+    if (target < 0 || !setItem || !gItemStackFromBlock || !gMove.block) return finish(false);
+    gItemStackFromBlock(tmp, gMove.block, 1, nullptr);
+    if (!safeRead(tmp, &vtable, 8) || !vtable || !safeRead(vtable, &dtor, 8) || !dtor) return finish(false);  // tmp leaks
+    if (stackHasItem(tmp)) setItem(sv.container, target, tmp);
+    reinterpret_cast<void (*)(void *)>(dtor)(tmp);
+    return finish(slotType(sv, target) == gMove.expected);
+  }
+  if (source < 0 || target < 0 || !setItem || !gItemStackCopy) return finish(false);
   gItemStackCopy(tmp, itemAt(sv, target));
   if (!safeRead(tmp, &vtable, 8) || !vtable || !safeRead(vtable, &dtor, 8) || !dtor) return finish(false);  // tmp leaks
   setItem(sv.container, target, itemAt(sv, source));
@@ -421,6 +434,41 @@ bool queueMove(const InventoryView &view, const void *expected, const std::strin
   if (gMove.state.load(std::memory_order_acquire) == 1) return true;
   gMove.expected = untag(expected);
   gMove.want = want;
+  gMove.inject = false;
+  gMove.block = nullptr;
+  for (int slot = 0; slot < 36; ++slot) gMove.snapshot[slot] = slotType(view, slot);
+  gMove.state.store(1, std::memory_order_release);
+  return true;
+}
+
+// The default state of a block type: the pointer field whose Block points back at the type.
+const void *defaultBlock(const void *type) {
+  for (unsigned o = 0; o < 0x400; o += 8) {
+    const void *p = nullptr, *back = nullptr;
+    if (!safeRead(static_cast<const char *>(type) + o, &p, 8) || !p) continue;
+    if (!safeRead(static_cast<const char *>(p) + off::Block_blockType, &back, 8)) continue;
+    if (untag(back) == untag(type)) return p;
+  }
+  return nullptr;
+}
+
+// Creative only: posts a job that builds a stack of the wanted block straight into the hotbar. True while in flight.
+bool queueInject(const InventoryView &view, const void *expected, const std::string &want) {
+  if (!gServerTickOrig.load(std::memory_order_acquire) || !gItemStackFromBlock || !gItemStackHasItem) return false;
+  if (gMoveFailedFor.load(std::memory_order_relaxed) == untag(expected)) return false;
+  for (int slot = 0; slot < 36; ++slot)
+    if (slotType(view, slot) == untag(expected)) return false;  // already carried: nothing to conjure
+  if (gMove.state.load(std::memory_order_acquire) == 1) return true;
+  const void *block = defaultBlock(expected);
+  if (!block) {
+    gMoveFailedFor.store(untag(expected), std::memory_order_relaxed);
+    trace("EasyPlace: auto-pick {} via creative-inject -> failed", shortName(want));
+    return false;
+  }
+  gMove.expected = untag(expected);
+  gMove.want = want;
+  gMove.inject = true;
+  gMove.block = block;
   for (int slot = 0; slot < 36; ++slot) gMove.snapshot[slot] = slotType(view, slot);
   gMove.state.store(1, std::memory_order_release);
   return true;
@@ -467,6 +515,7 @@ bool autoPick(const Context &ctx, const void *expected, const std::string &want)
   if (!inventoryView(ctx.player, view)) return failed();
   if (queueMove(view, expected, want)) return false;  // the server thread does it; the next tap finds the block in the hotbar
   if (!creativeMode(ctx.player)) return false;  // survival: no conjuring, "Hold X"
+  if (queueInject(view, expected, want)) return false;  // the next tap finds the block in the hotbar
 
   int empty = -1;
   for (int slot = 0; slot < 9; ++slot)
@@ -650,6 +699,7 @@ bool install(pl::log::Logger &log, std::string &error) {
       {"PlayerGameType", sig::PlayerGameType, reinterpret_cast<void **>(&gGameType)},
       {"PickBlock", sig::PickBlock, reinterpret_cast<void **>(&gPickBlock)},
       {"ItemStackCopy", sig::ItemStackCopy, reinterpret_cast<void **>(&gItemStackCopy)},
+      {"ItemStackFromBlock", sig::ItemStackFromBlock, reinterpret_cast<void **>(&gItemStackFromBlock)},
       {"ServerPlayerTick", sig::ServerPlayerTick, &serverTick},
       {"HandItem", sig::HandItem, reinterpret_cast<void **>(&gHandItem)},
       {"BlockRegistry", sig::BlockRegistry, reinterpret_cast<void **>(&gRegistry)},
@@ -664,7 +714,8 @@ bool install(pl::log::Logger &log, std::string &error) {
                           w.out == reinterpret_cast<void **>(&gItemStackHasItem) ||
                           w.out == reinterpret_cast<void **>(&gPickBlock) ||
                           w.out == reinterpret_cast<void **>(&gGameType) ||
-                          w.out == reinterpret_cast<void **>(&gItemStackCopy) || w.out == &serverTick;
+                          w.out == reinterpret_cast<void **>(&gItemStackCopy) ||
+                          w.out == reinterpret_cast<void **>(&gItemStackFromBlock) || w.out == &serverTick;
     if ((it == found.end() || !it->second) && optional) {
       log.warn("BE-Matica: {} not found, {} disabled", w.name,
                w.out == reinterpret_cast<void **>(&gSelectSlot) ? "auto-select" : "auto-pick");
