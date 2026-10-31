@@ -270,7 +270,7 @@ void MaterialsPanel::redrawLocked() {
     const float font = sh * 0.032f, pad = font * 0.5f, ctrlH = font * 2.3f;
     row_ = font * 1.55f;
     headerH_ = font * 2.4f;
-    w_ = font * 15;
+    w_ = font * 17;
     if (px_ < 0) px_ = sw * 0.21f, py_ = sh * 0.12f;  // right of the launcher's own buttons at the top left
     px_ = std::clamp(px_, 0.0f, sw - w_);
     py_ = std::clamp(py_, 0.0f, sh - headerH_);
@@ -323,7 +323,7 @@ void MaterialsPanel::redrawLocked() {
 
         button(x_ + pad, yy, half, ctrlH, "Hologram", "hologram", hologram_ ? "0" : "1", hologram_);
         button(x_ + pad * 2 + half, yy, half, ctrlH, "Easy Place", "easyplace", easyPlace_ ? "0" : "1", easyPlace_);
-        yy += ctrlH + pad;
+        yy += ctrlH + pad * 2;
       } else {
         const std::string title = title_.empty() ? "No structure loaded"
                                                  : title_ + "   " + std::to_string(done_.size()) + "/" +
