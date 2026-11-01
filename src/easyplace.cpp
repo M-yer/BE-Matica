@@ -252,6 +252,9 @@ bool placeAt(void *gm, void *player, const World &w, const Cell &target, uint8_t
   // replaceable.
   for (int step = 0; step < 8; ++step) {
     if (step == 0 && preferFace < 0) continue;
+    // A block whose facing comes from the clicked face (wall sign...) is placed on that face or not at all: any other
+    // support would place a different block (a standing sign on top) that the structure does not want.
+    if (step > 0 && preferFace >= 0) break;
     const uint8_t face = static_cast<uint8_t>(step == 0 ? preferFace : step - 1);
     const bool air = face == 6;
     if (air && !gAirPlace.load(std::memory_order_relaxed)) break;
@@ -259,7 +262,7 @@ bool placeAt(void *gm, void *player, const World &w, const Cell &target, uint8_t
     const Cell n = air ? target
                        : Cell{target[0] - kFaceDir[face][0], target[1] - kFaceDir[face][1],
                               target[2] - kFaceDir[face][2]};
-    if (!air && (w.isAir(n) || (otherSupport && interactable(w, n)))) continue;
+    if (!air && (w.isAir(n) || (otherSupport && step > 0 && interactable(w, n)))) continue;
     const BlockPos pos{n[0], n[1], n[2]};
     const float hit[3] = {n[0] + 0.5f + 0.5f * kFaceDir[clickFace][0], n[1] + 0.5f + 0.5f * kFaceDir[clickFace][1],
                           n[2] + 0.5f + 0.5f * kFaceDir[clickFace][2]};
