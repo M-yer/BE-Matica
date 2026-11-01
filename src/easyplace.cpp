@@ -376,7 +376,13 @@ bool inventoryView(void *player, InventoryView &out) {
 
 const void *itemAt(const InventoryView &view, int slot) { return view.getItem(view.container, slot); }
 
-bool stackHasItem(const void *stack) { return stack && gItemStackHasItem && gItemStackHasItem(stack); }
+// The game's own hasItem also demands that the item has a legacy block, which signs, doors, buckets and every other
+// component-defined item lack, so a stack of those looked empty. Here a stack has an item when its holder names one.
+bool stackHasItem(const void *stack) {
+  const void *holder = nullptr, *item = nullptr;
+  return stack && gItemStackHasItem && safeRead(static_cast<const char *>(stack) + off::ItemStack_item, &holder, 8) && holder &&
+         safeRead(holder, &item, 8) && item;
+}
 
 // What places a block: normally its own block item (found by block type); doors, buckets, seeds and the like come from
 // an item of another name (found by Item). `item` stays null when the game has no item of that name.

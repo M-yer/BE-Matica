@@ -48,7 +48,7 @@ constexpr const char *HandItem = "28 1C 00 12 1F 05 00 71 ? ? ? ? 08 00 40 F9 01
 constexpr const char *SelectSlot =
     "FD 7B BB A9 FC 67 01 A9 F8 5F 02 A9 F6 57 03 A9 F4 4F 04 A9 FD 03 00 91 FF C3 09 D1 56 D0 3B D5 C8 16 40 F9 5F 1C 00 "
     "72 A8 83 1F F8 60 00 00 54";
-// ItemStack::hasItem: distinguishes an empty stack from a non-block item.
+// ItemStack::hasItem: true only when the stack's item has a legacy block (false for signs, doors, buckets...), see stackHasItem in easyplace.cpp.
 constexpr const char *ItemStackHasItem =
     "08 04 40 F9 48 01 00 B4 00 01 40 F9 E0 00 00 B4 FD 7B BF A9 FD 03 00 91 ? ? ? ? 1F 00 00 F1 E0 07 9F 1A "
     "FD 7B C1 A8 C0 03 5F D6";
