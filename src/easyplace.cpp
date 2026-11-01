@@ -466,11 +466,11 @@ struct MoveJob {
 MoveJob gMove;
 std::atomic<uintptr_t> gMoveFailedFor{0};  // type the last move could not do: later taps fall through to pick-block
 
+// The client's and the server's copy of a slot must give the same value, so this is the Item itself: ItemBlockType on an
+// item without a legacy block (swords, buckets...) is not stable between the two.
 uintptr_t slotType(const InventoryView &view, int slot) {
   const void *stack = itemAt(view, slot);
-  if (!stackHasItem(stack)) return 0;
-  const uintptr_t type = untag(gItemBlockType(stack).blockType);
-  return type ? type : untag(itemOf(stack));
+  return stackHasItem(stack) ? untag(itemOf(stack)) : 0;
 }
 
 // The Inventory's setItem is a known thunk; refuse to call anything else.
@@ -495,7 +495,10 @@ void runMoveJob(void *serverPlayer) {
     gMove.state.store(0, std::memory_order_release);
   };
   InventoryView sv;
-  if (className(serverPlayer) != "ServerPlayer" || !inventoryView(serverPlayer, sv)) return;  // not ours: wait for the next tick
+  if (className(serverPlayer) != "ServerPlayer" || !inventoryView(serverPlayer, sv)) {  // not ours: wait for the next tick
+    if (std::chrono::steady_clock::now() - gMove.posted > std::chrono::seconds(2)) gMove.state.store(0, std::memory_order_release);
+    return;
+  }
   for (int slot = 0; slot < 36; ++slot)
     if (slotType(sv, slot) != gMove.snapshot[slot]) {
       // Another player's inventory, or ours changed since the tap: a job left posted would block every later auto-pick.
