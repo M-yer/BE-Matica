@@ -458,7 +458,8 @@ bool selectFromHotbar(void *player, const Wanted &w) {
 struct MoveJob {
   std::atomic_int state{0};  // 0 idle, 1 posted
   Wanted w;
-  std::array<uintptr_t, 36> snapshot{};  // block type (else item) per slot of the local inventory, to find this player's ServerPlayer
+  std::array<uintptr_t, 36> snapshot{};  // Item per slot of the local inventory, for the slots in `check`
+  uint64_t check = 0;  // slots the job reads (the move's source): the ServerPlayer must hold the same Item there
   bool inject = false;          // creative-inject: conjure `block` into the hotbar instead of moving a stack
   const void *block = nullptr;  // the wanted type's default Block
   std::chrono::steady_clock::time_point posted{};
@@ -500,10 +501,11 @@ void runMoveJob(void *serverPlayer) {
     return;
   }
   for (int slot = 0; slot < 36; ++slot)
-    if (slotType(sv, slot) != gMove.snapshot[slot]) {
+    if ((gMove.check >> slot & 1) && slotType(sv, slot) != gMove.snapshot[slot]) {
       // Another player's inventory, or ours changed since the tap: a job left posted would block every later auto-pick.
       if (std::chrono::steady_clock::now() - gMove.posted < std::chrono::seconds(1)) return;
-      trace("EasyPlace: auto-pick {} -> dropped (inventory changed at slot {})", shortName(gMove.w.label()), slot);
+      trace("EasyPlace: auto-pick {} -> dropped (slot {}: client item {:#x}, server item {:#x}; source slots {:#x})",
+            shortName(gMove.w.label()), slot, gMove.snapshot[slot], slotType(sv, slot), gMove.check);
       gMove.state.store(0, std::memory_order_release);
       return;
     }
@@ -845,7 +847,12 @@ bool queueMove(const InventoryView &view, const Wanted &w) {
   gMove.w = w;
   gMove.inject = false;
   gMove.block = nullptr;
-  for (int slot = 0; slot < 36; ++slot) gMove.snapshot[slot] = slotType(view, slot);
+  gMove.check = 0;
+  for (int slot = 9; slot < 36; ++slot)
+    if (stackMatches(itemAt(view, slot), w)) {
+      gMove.snapshot[slot] = slotType(view, slot);
+      gMove.check |= uint64_t{1} << slot;
+    }
   gMove.posted = std::chrono::steady_clock::now();
   gMove.state.store(1, std::memory_order_release);
   return true;
@@ -879,7 +886,7 @@ bool queueInject(const InventoryView &view, const Wanted &w) {
   gMove.w = w;
   gMove.inject = true;
   gMove.block = block;
-  for (int slot = 0; slot < 36; ++slot) gMove.snapshot[slot] = slotType(view, slot);
+  gMove.check = 0;  // nothing is read from the inventory, so there is nothing to compare
   gMove.posted = std::chrono::steady_clock::now();
   gMove.state.store(1, std::memory_order_release);
   return true;
@@ -924,9 +931,10 @@ bool autoPick(const Context &ctx, const Wanted &w) {
   if (!gPickBlock || !gSelectSlot || !gItemStackHasItem) return failed();
   InventoryView view;
   if (!inventoryView(ctx.player, view)) return failed();
+  const bool creative = creativeMode(ctx.player);
+  if (creative && queueInject(view, w)) return false;  // creative conjures the item; the next tap finds it in the hotbar
   if (queueMove(view, w)) return false;  // the server thread does it; the next tap finds the block in the hotbar
-  if (!creativeMode(ctx.player)) return false;  // survival: no conjuring, "Hold X"
-  if (queueInject(view, w)) return false;  // the next tap finds the block in the hotbar
+  if (!creative) return false;  // survival: no conjuring, "Hold X"
 
   int empty = -1;
   for (int slot = 0; slot < 9; ++slot)
