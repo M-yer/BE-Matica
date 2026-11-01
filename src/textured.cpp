@@ -1,6 +1,8 @@
 #include "textured.hpp"
 
+#include "atlas.hpp"
 #include "game.hpp"
+#include "zipfile.hpp"
 
 #include <pl/Logger.hpp>
 #include <pl/memory/Signature.hpp>
@@ -12,6 +14,8 @@
 #include <atomic>
 #include <cstdarg>
 #include <chrono>
+#include <mutex>
+#include <thread>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -124,7 +128,53 @@ char *atlasTexture(const char *levelRenderer) {
   return holder + 0x18;
 }
 
+std::mutex gAtlasMu;
+std::shared_ptr<const TextureAtlas> gAtlasData;
+std::filesystem::path gCacheDir;
+std::atomic_bool gPrepareStarted{false};
+
+// Loads the cached atlas, or builds it from the game's own apk (found through /proc/self/maps) and caches it.
+void prepareAtlas(std::filesystem::path cacheDir) {
+  const auto t0 = std::chrono::steady_clock::now();
+  const auto ms = [&] { return static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count()); };
+  const std::vector<std::string> apks = gameArchiveCandidates();
+  const std::string cacheFile = (cacheDir / "atlas.bin").string();
+  for (const std::string &apk : apks) {
+    const std::string stamp = archiveStamp(apk);
+    auto atlas = std::make_shared<TextureAtlas>();
+    if (loadAtlas(cacheFile, stamp, *atlas)) {
+      info("BE-Matica: Atlas loaded from cache %s (%dx%d, %zu textures, %zu blocks) in %lld ms", cacheFile.c_str(), atlas->width,
+           atlas->height, atlas->tiles.size(), atlas->blocks.size(), ms());
+      std::lock_guard lock(gAtlasMu);
+      gAtlasData = std::move(atlas);
+      return;
+    }
+    ResourcePack pack;
+    std::string error;
+    if (!pack.open(apk, error) || !buildAtlas(pack, stamp, *atlas, error)) {
+      info("BE-Matica: Atlas not built from %s: %s", apk.c_str(), error.c_str());
+      continue;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(cacheDir, ec);
+    info("BE-Matica: Atlas built from %s (%dx%d, %zu textures, %zu blocks) in %lld ms%s%s, cache %s", apk.c_str(), atlas->width,
+         atlas->height, atlas->tiles.size(), atlas->blocks.size(), ms(), error.empty() ? "" : "; note: ", error.c_str(),
+         saveAtlas(*atlas, cacheFile) ? "written" : "NOT written");
+    std::lock_guard lock(gAtlasMu);
+    gAtlasData = std::move(atlas);
+    return;
+  }
+  info("BE-Matica: Atlas unavailable: no readable game apk among %zu candidate(s)", apks.size());
+}
+
 }  // namespace
+
+void setCacheDir(const std::filesystem::path &dir) { gCacheDir = dir; }
+
+std::shared_ptr<const TextureAtlas> atlas() {
+  std::lock_guard lock(gAtlasMu);
+  return gAtlasData;
+}
 
 void install(pl::log::Logger &log) {
   if (!kAllowed) return;
@@ -160,6 +210,7 @@ void uninstall() { gReady = false; }
 void setEnabled(bool on) {
   gEnabled = on && kAllowed;
   info("BE-Matica: Textured %s", gEnabled ? "enabled" : "disabled");
+  if (gEnabled && !gCacheDir.empty() && !gPrepareStarted.exchange(true)) std::thread(prepareAtlas, gCacheDir).detach();
 }
 bool enabled() { return gEnabled && gReady; }
 

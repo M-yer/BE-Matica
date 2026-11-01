@@ -113,6 +113,7 @@ public:
     hologram::setOutlines(outlinesOn_);
     hologram::setFill(fillOn_);
     hologram::setVisible(hologramOn_);
+    textured::setCacheDir(structuresDir_.parent_path() / "texture_cache");
     textured::setEnabled(texturedOn_);
     applyLookLocked();
     easyplace::setEnabled(easyPlaceOn_);

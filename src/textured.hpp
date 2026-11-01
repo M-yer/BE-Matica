@@ -1,7 +1,10 @@
 #pragma once
 
+#include "atlas.hpp"
 #include "mesh.hpp"
 
+#include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -17,6 +20,11 @@ namespace bematica::textured {
 void install(pl::log::Logger &log);
 void uninstall();
 void setEnabled(bool on);
+
+// Where the texture atlas made from the installed game is cached (keyed by the game's apk). The atlas is prepared on a
+// background thread the first time the textured view is switched on; logs "Atlas ..." lines.
+void setCacheDir(const std::filesystem::path &dir);
+std::shared_ptr<const TextureAtlas> atlas();  // null until prepared
 bool enabled();
 
 // Draws the blocks near the camera relative to it. `levelRenderer` holds the block atlas and the ClientInstance.
