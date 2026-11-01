@@ -262,12 +262,8 @@ bool placeAt(void *gm, void *player, const World &w, const Cell &target, uint8_t
     const Cell n = air ? target
                        : Cell{target[0] - kFaceDir[face][0], target[1] - kFaceDir[face][1],
                               target[2] - kFaceDir[face][2]};
-    // No sneak-click yet: clicking a barrel/chest for a wall sign would open it instead.
-    if (step == 0 && !w.isAir(n) && interactable(w, n)) {
-      trace("EasyPlace: support {} {} {} is interactable, wall-mounted block left to the player", n[0], n[1], n[2]);
-      say("Sneak and place this one by hand");
-      return false;
-    }
+    // Clicking a barrel/chest opens it unless the player sneaks; when sneaking it places with the right facing.
+    if (step == 0 && !w.isAir(n) && interactable(w, n)) say("Sneak while tapping here");
     if (!air && (w.isAir(n) || (otherSupport && step > 0 && interactable(w, n)))) continue;
     const BlockPos pos{n[0], n[1], n[2]};
     const float hit[3] = {n[0] + 0.5f + 0.5f * kFaceDir[clickFace][0], n[1] + 0.5f + 0.5f * kFaceDir[clickFace][1],
