@@ -21,7 +21,7 @@ constexpr int kAtlasWidth = 1024;
 constexpr int kMaxAtlasHeight = 4096;
 constexpr int kPad = 1;  // edge pixels repeated around each tile so filtering and mip levels do not bleed neighbours
 constexpr uint32_t kCacheMagic = 0x54414D42;  // "BMAT"
-constexpr uint32_t kCacheFormat = 1;
+constexpr uint32_t kCacheFormat = 2;
 
 constexpr uint32_t kGrass = 0x79C05A, kFoliage = 0x79C05A, kSpruce = 0x619961, kBirch = 0x80A755, kWater = 0x44AFF5;
 
@@ -280,31 +280,55 @@ struct In {
 
 }  // namespace
 
-bool ResourcePack::open(const std::string &archivePath, std::string &error) {
-  if (!zip_.open(archivePath, error)) return false;
-  // Several packs may be inside an apk; the vanilla one holds the block textures.
-  const std::string suffix = "textures/terrain_texture.json";
+bool ResourcePack::open(const std::vector<std::string> &archivePaths, std::string &error) {
+  parts_.clear();
   auto preferred = [](const std::string &root) {
     return endsWith(root, "/vanilla/") || endsWith(root, "/resource_pack/") || root == "resource_pack/";
   };
-  std::string best;
-  for (const auto &kv : zip_.entries()) {
-    const std::string &n = kv.first;
-    if (!endsWith(n, suffix.c_str()) || (n.size() > suffix.size() && n[n.size() - suffix.size() - 1] != '/')) continue;
-    const std::string root = n.substr(0, n.size() - suffix.size());
-    if (best.empty() || preferred(root) > preferred(best) || (preferred(root) == preferred(best) && root.size() < best.size()))
-      best = root;
+  const std::string suffix = "textures/terrain_texture.json";
+  bool haveTerrain = false;
+  std::string lastError;
+  for (const std::string &path : archivePaths) {
+    Part part{std::make_unique<ZipArchive>(), {}};
+    if (!part.zip->open(path, lastError)) continue;
+    // Several packs may be inside an apk; the vanilla one holds the block textures. A split may hold only some of its
+    // files, so a root is also taken from any entry under resource_packs/vanilla/.
+    std::string best;
+    bool terrain = false;
+    for (const auto &kv : part.zip->entries()) {
+      const std::string &n = kv.first;
+      std::string root;
+      bool isTerrain = false;
+      if (endsWith(n, suffix.c_str()) && (n.size() == suffix.size() || n[n.size() - suffix.size() - 1] == '/')) {
+        root = n.substr(0, n.size() - suffix.size()), isTerrain = true;
+      } else if (const size_t at = n.find("resource_packs/vanilla/"); at != std::string::npos && (at == 0 || n[at - 1] == '/')) {
+        root = n.substr(0, at + 23);
+      } else {
+        continue;
+      }
+      if (best.empty() || (isTerrain && !terrain) || (isTerrain == terrain && (preferred(root) > preferred(best) ||
+                                                                              (preferred(root) == preferred(best) && root.size() < best.size()))))
+        best = root, terrain = isTerrain;
+    }
+    if (best.empty()) continue;
+    haveTerrain = haveTerrain || terrain;
+    part.root = best;
+    parts_.push_back(std::move(part));
   }
-  if (best.empty()) {
-    error = "no resource pack with textures/terrain_texture.json in " + archivePath;
+  if (!haveTerrain) {
+    parts_.clear();
+    error = "no resource pack with textures/terrain_texture.json in " + std::to_string(archivePaths.size()) + " archive(s)" +
+            (lastError.empty() ? "" : " (" + lastError + ")");
     return false;
   }
-  root_ = best;
   return true;
 }
 
 bool ResourcePack::read(const std::string &relPath, std::vector<uint8_t> &out, std::string &error) const {
-  return zip_.read(root_ + relPath, out, 64u << 20, error);
+  for (const Part &p : parts_)
+    if (p.zip->entries().count(p.root + relPath)) return p.zip->read(p.root + relPath, out, 64u << 20, error);
+  error = "no such entry: " + relPath;
+  return false;
 }
 
 std::string archiveStamp(const std::string &archivePath) {
@@ -312,6 +336,12 @@ std::string archiveStamp(const std::string &archivePath) {
   if (stat(archivePath.c_str(), &st) != 0) return archivePath;
   return baseName(archivePath) + ":" + std::to_string(static_cast<long long>(st.st_size)) + ":" +
          std::to_string(static_cast<long long>(st.st_mtime));
+}
+
+std::string archiveStamp(const std::vector<std::string> &archivePaths) {
+  std::string stamp;
+  for (const std::string &p : archivePaths) stamp += (stamp.empty() ? "" : "+") + archiveStamp(p);
+  return stamp;
 }
 
 bool buildAtlas(const ResourcePack &pack, const std::string &stamp, TextureAtlas &out, std::string &error) {

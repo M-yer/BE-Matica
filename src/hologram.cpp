@@ -630,7 +630,12 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
 
   // Textured faces from our atlas. The game's own outline draw goes first: its shader holds this frame's view-projection.
   bool drewTextured = false, outlineDrawn = false;
-  if (haveLine && mesh->textured && textured::atlasWanted()) {
+  const char *why = "using";
+  if (!textured::atlasWanted()) why = "skipped: setting off or atlas not ready";
+  else if (!haveLine) why = "skipped: no outline material";
+  else if (!mesh->textured) why = "skipped: mesh has no texture coordinates";
+  else {
+    textured::snapshotViewProjections();
     drawLines(screenContext, tess, lineMat, mesh->lines, cam);
     outlineDrawn = true;
     float viewProj[16];
@@ -639,10 +644,16 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
       std::lock_guard lock(gMu);
       origin = gOrigin;
     }
-    if (textured::captureViewProjection(viewProj))
-      drewTextured = textured::drawAtlas(*mesh, origin, cam, gAlpha.load(std::memory_order_relaxed), viewProj);
+    if (!textured::captureViewProjection(viewProj)) why = "skipped: no WORLDVIEWPROJ matrix found in the game's shader";
+    else if (!(drewTextured = textured::drawAtlas(*mesh, origin, cam, gAlpha.load(std::memory_order_relaxed), viewProj)))
+      why = "skipped: GL draw failed";
   }
-  if (!drewTextured && textured::enabled()) {
+  static const char *lastWhy = nullptr;
+  if (why != lastWhy) {  // log each change of decision once
+    lastWhy = why;
+    __android_log_print(ANDROID_LOG_INFO, "BE-Matica", "BE-Matica: Atlas GL path: %s", why);
+  }
+  if (!drewTextured && !textured::atlasWanted() && textured::enabled()) {  // old BlockTessellator experiment: only without an atlas
     std::shared_ptr<const Structure> structure;
     {
       std::lock_guard lock(gMu);

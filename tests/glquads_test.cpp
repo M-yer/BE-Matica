@@ -225,8 +225,15 @@ void testViewProjectionCapture() {
   glUseProgram(other);
   glUniformMatrix4fv(glGetUniformLocation(other, "other"), 1, GL_FALSE, m);
   CHECK(!glquads::captureViewProjection(got));
+  // No program bound after the game's draw: the one whose matrix changed since the snapshot is found.
+  glUseProgram(good);
+  glUniformMatrix4fv(glGetUniformLocation(good, "WORLDVIEWPROJ"), 1, GL_FALSE, m);
+  glquads::snapshotViewProjections();
+  float m2[16];
+  for (int i = 0; i < 16; ++i) m2[i] = static_cast<float>(i + 7);
+  glUniformMatrix4fv(glGetUniformLocation(good, "WORLDVIEWPROJ"), 1, GL_FALSE, m2);
   glUseProgram(0);
-  CHECK(!glquads::captureViewProjection(got));
+  CHECK(glquads::captureViewProjection(got) && std::memcmp(got, m2, sizeof(m2)) == 0);
 }
 
 // One block of `block` seen from outside through its `face`, drawn by the real chain, compared with the picture.

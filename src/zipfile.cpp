@@ -174,6 +174,11 @@ std::vector<std::string> gameArchiveCandidates() {
       }
     }
   }
+  // The game is an apk plus split apks (arm64 libs, language, density, install pack) in one folder; textures may be in any.
+  for (const std::string &apk : std::vector<std::string>(out)) {
+    std::error_code ec;
+    for (const auto &e : fs::directory_iterator(fs::path(apk).parent_path(), ec)) add(e.path());
+  }
   return out;
 }
 

@@ -236,35 +236,98 @@ bool uploadMesh(const HologramMesh &m, const Vec3f &base) {
 
 bool ready() { return gl.atlas != 0 && gl.program != 0 && !gl.failed; }
 
-bool captureViewProjection(float out[16]) {
-  GLint program = 0;
-  glGetIntegerv(GL_CURRENT_PROGRAM, &program);
-  if (!program) return false;
-  static GLint cachedProgram = 0, cachedLocation = -1;
-  static bool listed = false;
-  if (static_cast<GLint>(program) != cachedProgram) {
-    cachedProgram = program, cachedLocation = -1;
-    GLint count = 0;
-    glGetProgramiv(static_cast<GLuint>(program), GL_ACTIVE_UNIFORMS, &count);
-    for (GLint i = 0; i < count; ++i) {
-      char name[128]{};
-      GLsizei len = 0;
-      GLint size = 0;
-      GLenum type = 0;
-      glGetActiveUniform(static_cast<GLuint>(program), static_cast<GLuint>(i), sizeof(name) - 1, &len, &size, &type, name);
-      if (!listed) info("BE-Matica: Atlas GL program %d uniform %d: %s (type %#x, size %d)", program, i, name, type, size);
-      if (type == GL_FLOAT_MAT4 && strcasestr(name, "WORLDVIEWPROJ")) cachedLocation = glGetUniformLocation(static_cast<GLuint>(program), name);
-    }
-    listed = true;
+namespace {
+
+struct Candidate {
+  GLuint program;
+  GLint location;
+  float before[16];
+};
+std::vector<Candidate> gCandidates;
+GLuint gStickyProgram = 0;
+unsigned gSnapshots = 0;
+
+GLint viewProjLocation(GLuint program, bool log) {
+  GLint count = 0;
+  glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &count);
+  GLint found = -1;
+  for (GLint i = 0; i < count; ++i) {
+    char name[128]{};
+    GLsizei len = 0;
+    GLint size = 0;
+    GLenum type = 0;
+    glGetActiveUniform(program, static_cast<GLuint>(i), sizeof(name) - 1, &len, &size, &type, name);
+    if (log) info("BE-Matica: Atlas GL program %u uniform %d: %s (type %#x, size %d)", program, i, name, type, size);
+    if (type == GL_FLOAT_MAT4 && strcasestr(name, "WORLDVIEWPROJ")) found = glGetUniformLocation(program, name);
   }
-  if (cachedLocation < 0) return false;
-  glGetUniformfv(static_cast<GLuint>(program), cachedLocation, out);
+  return found;
+}
+
+bool usable(const float m[16]) {
   bool any = false;
   for (int i = 0; i < 16; ++i) {
-    if (!std::isfinite(out[i])) return false;
-    any = any || out[i] != 0.0f;
+    if (!std::isfinite(m[i])) return false;
+    any = any || m[i] != 0.0f;
   }
   return any;
+}
+
+}  // namespace
+
+void snapshotViewProjections() {
+  if (gCandidates.empty() || ++gSnapshots % 600 == 0) {
+    gCandidates.clear();
+    GLint linked = 0;
+    for (GLuint id = 1; id < 2048; ++id) {
+      if (!glIsProgram(id)) continue;
+      glGetProgramiv(id, GL_LINK_STATUS, &linked);
+      if (!linked) continue;
+      const GLint loc = viewProjLocation(id, false);
+      if (loc >= 0) gCandidates.push_back({id, loc, {}});
+    }
+  }
+  for (Candidate &c : gCandidates) glGetUniformfv(c.program, c.location, c.before);
+}
+
+bool captureViewProjection(float out[16]) {
+  GLint current = 0;
+  glGetIntegerv(GL_CURRENT_PROGRAM, &current);
+  static GLint cachedProgram = 0, cachedLocation = -1;
+  static bool listed = false;
+  if (current) {
+    if (current != cachedProgram) {
+      cachedProgram = current;
+      cachedLocation = viewProjLocation(static_cast<GLuint>(current), !listed);
+      listed = true;
+    }
+    if (cachedLocation >= 0) {
+      glGetUniformfv(static_cast<GLuint>(current), cachedLocation, out);
+      if (usable(out)) return true;
+    }
+  }
+  // No program bound (or not one with the matrix): look for the program whose matrix the game's draw just changed.
+  static bool logged = false;
+  const Candidate *pick = nullptr;
+  float now[16];
+  for (const Candidate &c : gCandidates) {
+    glGetUniformfv(c.program, c.location, now);
+    if (usable(now) && std::memcmp(now, c.before, sizeof(now)) != 0) {
+      pick = &c;
+      break;
+    }
+  }
+  if (!pick)
+    for (const Candidate &c : gCandidates)
+      if (c.program == gStickyProgram) pick = &c;
+  if (!logged) {
+    logged = true;
+    info("BE-Matica: Atlas GL view-projection: current program %d, %zu programs with WORLDVIEWPROJ, picked %u", current,
+         gCandidates.size(), pick ? pick->program : 0u);
+  }
+  if (!pick) return false;
+  glGetUniformfv(pick->program, pick->location, out);
+  gStickyProgram = pick->program;
+  return usable(out);
 }
 
 bool uploadAtlas(const TextureAtlas &atlas) {

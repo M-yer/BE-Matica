@@ -1,5 +1,5 @@
 // Host tool: builds the texture atlas from a game apk / vanilla resource pack zip and writes pictures to check it by eye.
-//   atlas_dump <apk or resource pack zip> <out folder> [block names file]
+//   atlas_dump <apk or resource pack zip[,more splits...]> <out folder> [block names file]
 // Writes atlas.png (the whole atlas), debug_faces.png (resolved faces, unfolded cubes) and atlas_cache.bin.
 // With a block names file (one name per line) it lists the blocks that get no texture.
 #include "atlas.hpp"
@@ -90,15 +90,22 @@ int main(int argc, char **argv) {
     std::printf("usage: atlas_dump <apk or resource pack zip> <out folder> [block names file]\n");
     return 2;
   }
-  const std::string archive = argv[1], out = argv[2];
+  const std::string out = argv[2];
+  std::vector<std::string> archives;  // "a.apk,b.apk": an apk and its splits
+  for (size_t from = 0, to; from <= std::string(argv[1]).size(); from = to + 1) {
+    const std::string all = argv[1];
+    to = all.find(',', from);
+    if (to == std::string::npos) to = all.size();
+    archives.push_back(all.substr(from, to - from));
+  }
   ResourcePack pack;
   std::string error;
-  if (!pack.open(archive, error)) {
+  if (!pack.open(archives, error)) {
     std::printf("cannot open pack: %s\n", error.c_str());
     return 1;
   }
   TextureAtlas atlas;
-  const std::string cache = out + "/atlas_cache.bin", stamp = archiveStamp(archive);
+  const std::string cache = out + "/atlas_cache.bin", stamp = archiveStamp(archives);
   if (loadAtlas(cache, stamp, atlas)) {
     std::printf("atlas loaded from cache\n");
   } else {

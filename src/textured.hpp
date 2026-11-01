@@ -31,6 +31,7 @@ std::shared_ptr<const TextureAtlas> atlas();  // null until prepared
 bool atlasWanted();  // setting on and the atlas is ready: build meshes with UVs and try drawCached()
 // Render thread. Reads the view-projection matrix from the game's current shader program (call right after one of the
 // game's own draws); false when it cannot be found.
+void snapshotViewProjections();  // before the game's draw
 bool captureViewProjection(float out[16]);
 // Render thread. Draws the mesh's textured faces; false when it could not (the caller keeps the tinted boxes).
 bool drawAtlas(const HologramMesh &mesh, const std::array<int, 3> &origin, const Vec3f &cam, float alpha, const float viewProj[16]);

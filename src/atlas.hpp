@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -33,18 +34,24 @@ struct TextureAtlas {
 };
 
 // The vanilla resource pack inside a game apk (assets/resource_packs/vanilla/) or a plain resource_pack/ zip.
+// Several archives (an apk and its splits) are read as one overlaid file system, first match wins.
 class ResourcePack {
 public:
-  bool open(const std::string &archivePath, std::string &error);
+  bool open(const std::string &archivePath, std::string &error) { return open(std::vector<std::string>{archivePath}, error); }
+  bool open(const std::vector<std::string> &archivePaths, std::string &error);
   bool read(const std::string &relPath, std::vector<uint8_t> &out, std::string &error) const;
 
 private:
-  ZipArchive zip_;
-  std::string root_;
+  struct Part {
+    std::unique_ptr<ZipArchive> zip;
+    std::string root;
+  };
+  std::vector<Part> parts_;
 };
 
 // Changes whenever the archive is replaced (game update): file name, size, modification time.
 std::string archiveStamp(const std::string &archivePath);
+std::string archiveStamp(const std::vector<std::string> &archivePaths);
 
 // Reads blocks.json, terrain_texture.json and the textures they name, packs them into one atlas.
 // Flipbook strips contribute their first frame. Grass, foliage and water get a fixed default tint baked in.
