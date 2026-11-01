@@ -6,7 +6,7 @@ mkdir -p build/host-tests
 sed "s|@BLOCK_MAP@|$PWD/data/java_to_bedrock.tsv.gz|" src/block_map_data.S.in > build/host-tests/block_map_data.S
 CXXFLAGS=(-std=c++20 -O1 -g -Wall -Wextra -D_GLIBCXX_ASSERTIONS -Isrc)
 CORE=(src/nbt.cpp src/mcstructure.cpp src/library.cpp src/mesh.cpp src/gzip.cpp src/blockmap.cpp src/litematic.cpp
-      build/host-tests/block_map_data.S)
+      src/texresolve.cpp build/host-tests/block_map_data.S)
 "${CXX:-c++}" "${CXXFLAGS[@]}" "${CORE[@]}" tests/mcstructure_test.cpp -lz -o build/host-tests/mcstructure_test
 "${CXX:-c++}" "${CXXFLAGS[@]}" "${CORE[@]}" tests/litematic_test.cpp -lz -o build/host-tests/litematic_test
 "${CXX:-c++}" "${CXXFLAGS[@]}" "${CORE[@]}" tests/orient_test.cpp -lz -o build/host-tests/orient_test
@@ -31,6 +31,18 @@ if [[ -d "$DEPS/nlohmann_json-src/include" && -d "$DEPS/lunasvg-src/plutovg/sour
   mkdir -p build/debug-textures
   build/host-tests/atlas_dump "$PACK" build/debug-textures > build/debug-textures/log.txt
   echo "texture debug pictures: build/debug-textures/atlas.png, debug_faces.png"
+  # The textured face renderer on a real GLES 3 context (Mesa, surfaceless EGL). Needs the GLES / EGL headers of the
+  # Android NDK (set NDK) and the system libEGL / libGLESv2; skipped otherwise.
+  GLSYS="${NDK:-/nonexistent}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
+  if [[ -d "$GLSYS/GLES3" && -d "$GLSYS/EGL" ]] && ldconfig -p | grep -q "libGLESv2.so.2" && ldconfig -p | grep -q "libEGL.so.1"; then
+    rm -rf build/host-tests/glinc && mkdir -p build/host-tests/glinc
+    for d in EGL GLES2 GLES3 KHR; do ln -s "$GLSYS/$d" "build/host-tests/glinc/$d"; done
+    "${CXX:-c++}" "${TEXFLAGS[@]}" -Ibuild/host-tests/glinc src/glquads.cpp src/mesh.cpp "${TEX[@]}" tests/glquads_test.cpp -lz \
+      -l:libEGL.so.1 -l:libGLESv2.so.2 -o build/host-tests/glquads_test
+    build/host-tests/glquads_test "$PACK" 2> build/host-tests/glquads_test.log
+  else
+    echo "SKIPPED glquads test: set NDK (for the GLES headers) and install Mesa's libEGL / libGLESv2"
+  fi
 else
   echo "SKIPPED texture tests: need $DEPS (nlohmann_json-src, lunasvg-src) and the pack zip $PACK"
 fi

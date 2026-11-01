@@ -2,6 +2,7 @@
 
 #include "game.hpp"
 #include "mesh.hpp"
+#include "texresolve.hpp"
 #include "textured.hpp"
 
 #include <pl/Logger.hpp>
@@ -21,6 +22,7 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -84,7 +86,12 @@ std::function<void(const LookInfo &)> gLookListener;  // guarded by gMu
 bool finite(const Vec3f &v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
 
 void rebuildLocked() {
-  gMesh = gStructure ? std::make_shared<const HologramMesh>(buildMesh(*gStructure, gOrigin, gView, kMaxQuads, &gPlaced))
+  // With the textured view on and the atlas ready the mesh also carries the texture coordinates of every face.
+  const auto atlas = textured::atlasWanted() ? textured::atlas() : nullptr;
+  std::optional<TextureResolver> resolver;
+  if (atlas) resolver.emplace(*atlas);
+  gMesh = gStructure ? std::make_shared<const HologramMesh>(
+                           buildMesh(*gStructure, gOrigin, gView, kMaxQuads, &gPlaced, resolver ? &*resolver : nullptr))
                      : nullptr;
 }
 
@@ -584,6 +591,7 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
       gFullCheck = true;
       rebuildLocked();
     }
+    if (gMesh && !gMesh->textured && textured::atlasWanted()) rebuildLocked();  // the atlas became ready
     mesh = gMesh;
     if (gStructure && gOriginListener && (!gOriginReported || gOrigin != gReportedOrigin)) {
       gReportedOrigin = gOrigin, gOriginReported = true;
@@ -620,8 +628,21 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
   float savedOffset[3];
   std::memcpy(savedOffset, tessOffset, sizeof(savedOffset));
 
-  bool drewTextured = false;
-  if (textured::enabled()) {
+  // Textured faces from our atlas. The game's own outline draw goes first: its shader holds this frame's view-projection.
+  bool drewTextured = false, outlineDrawn = false;
+  if (haveLine && mesh->textured && textured::atlasWanted()) {
+    drawLines(screenContext, tess, lineMat, mesh->lines, cam);
+    outlineDrawn = true;
+    float viewProj[16];
+    std::array<int, 3> origin;
+    {
+      std::lock_guard lock(gMu);
+      origin = gOrigin;
+    }
+    if (textured::captureViewProjection(viewProj))
+      drewTextured = textured::drawAtlas(*mesh, origin, cam, gAlpha.load(std::memory_order_relaxed), viewProj);
+  }
+  if (!drewTextured && textured::enabled()) {
     std::shared_ptr<const Structure> structure;
     {
       std::lock_guard lock(gMu);
@@ -633,7 +654,7 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
   }
   if (!drewTextured && haveFace && gFill.load(std::memory_order_relaxed)) drawQuads(screenContext, tess, faceMat, *mesh, cam, gAlpha.load(std::memory_order_relaxed));
   if (haveLine) {
-    drawLines(screenContext, tess, lineMat, mesh->lines, cam);
+    if (!outlineDrawn) drawLines(screenContext, tess, lineMat, mesh->lines, cam);
     if (gOutlines.load(std::memory_order_relaxed)) drawLines(screenContext, tess, lineMat, mesh->blockLines, cam);
   }
   {
