@@ -9,6 +9,8 @@
 
 namespace bematica {
 
+class TextureResolver;
+
 struct Vec3f {
   float x, y, z;
 };
@@ -27,7 +29,16 @@ struct BlockCell {
   int32_t palette;  // index into the structure palette
 };
 
+// Texture coordinates of one Quad, same corner order. u < 0: the face has no texture, draw its tint.
+struct QuadUv {
+  float uv[4][2];
+  float shade;  // brightness of the face by its direction, like the game's own
+};
+
 struct HologramMesh {
+  uint64_t generation = 0;        // unique per built mesh, so cached GPU copies can tell meshes apart
+  bool textured = false;          // built with a TextureResolver: `uvs` is parallel to `quads`
+  std::vector<QuadUv> uvs;
   std::vector<Quad> quads;        // block faces, world coordinates
   std::vector<Line> lines;        // outline of the whole structure
   std::vector<BlockCell> blocks;  // blocks with at least one visible face, for the textured view
@@ -48,8 +59,9 @@ std::array<int, 3> viewSize(const Structure &s, const View &v);
 // Blocks are tinted by name so different materials are easy to tell apart. `origin` is the world
 // position of the transformed structure's minimum corner.
 // `placed` (optional) holds world positions (packWorld) already built correctly; those blocks are left out entirely.
+// `textures` (optional) also fills `uvs`: the block's own texture on every face, turned to match the rotated / mirrored view.
 HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, const View &view, size_t maxQuads,
-                       const std::unordered_set<uint64_t> *placed = nullptr);
+                       const std::unordered_set<uint64_t> *placed = nullptr, const TextureResolver *textures = nullptr);
 
 inline uint64_t packWorld(int x, int y, int z) {
   return (static_cast<uint64_t>(static_cast<uint32_t>(x) & 0x1FFFFF) << 42) |

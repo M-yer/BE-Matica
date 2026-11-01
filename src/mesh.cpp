@@ -1,6 +1,9 @@
 #include "mesh.hpp"
 
+#include "texresolve.hpp"
+
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <string>
 #include <unordered_set>
@@ -52,8 +55,11 @@ std::array<int, 3> viewSize(const Structure &s, const View &v) {
 }
 
 HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, const View &view, size_t maxQuads,
-                       const std::unordered_set<uint64_t> *placed) {
+                       const std::unordered_set<uint64_t> *placed, const TextureResolver *textures) {
+  static std::atomic<uint64_t> generations{0};
   HologramMesh mesh;
+  mesh.generation = ++generations;
+  mesh.textured = textures != nullptr;
   const int sx = s.size[0], sy = s.size[1], sz = s.size[2];
   const int rot = ((view.rotation % 4) + 4) % 4;
 
@@ -72,6 +78,22 @@ HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, const View
     paletteEmpty[k] = isEmpty(s.palette[k].name);
     tint(s.palette[k].name, colors[k][0], colors[k][1], colors[k][2]);
   }
+
+  // Texture of a face by palette entry and world face, looked up once.
+  struct FaceSlot {
+    bool done = false, ok = false;
+    FaceTexture tex;
+  };
+  std::vector<std::array<FaceSlot, 6>> faceSlots(textures ? s.palette.size() : 0);
+  auto faceTexture = [&](int32_t palette, Face wf) -> const FaceTexture * {
+    FaceSlot &slot = faceSlots[palette][static_cast<int>(wf)];
+    if (!slot.done) {
+      slot.done = true;
+      slot.ok = textures->resolve(s.palette[palette], wf, rot, view.mirror, slot.tex);
+    }
+    return slot.ok ? &slot.tex : nullptr;
+  };
+  constexpr float kShade[6] = {1.0f, 0.5f, 0.8f, 0.8f, 0.6f, 0.6f};  // up, down, north, south, west, east
 
   // Structure-local point (0..sx, 0..sy, 0..sz) to world, applying mirror then rotation.
   auto toWorld = [&](float x, float y, float z) {
@@ -110,6 +132,11 @@ HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, const View
         if (!solid[i]) continue;
         const auto &c = colors[s.layers[0][i]];
         bool exposed = false;
+        std::array<int, 3> cell{};
+        if (textures) {
+          const Vec3f w = toWorld(x + 0.5f, y + 0.5f, z + 0.5f);
+          cell = {static_cast<int>(std::floor(w.x)), static_cast<int>(std::floor(w.y)), static_cast<int>(std::floor(w.z))};
+        }
         for (int f = 0; f < 6; ++f) {
           const int nx = x + kDir[f][0], ny = y + kDir[f][1], nz = z + kDir[f][2];
           const bool inside = nx >= 0 && ny >= 0 && nz >= 0 && nx < sx && ny < sy && nz < sz;
@@ -123,6 +150,22 @@ HologramMesh buildMesh(const Structure &s, std::array<int, 3> origin, const View
           }
           q.r = c[0], q.g = c[1], q.b = c[2];
           mesh.quads.push_back(q);
+          if (textures) {
+            const Face wf = worldFace(static_cast<Face>(f), rot, view.mirror);
+            const FaceTexture *ft = faceTexture(s.layers[0][i], wf);
+            QuadUv uv{};
+            uv.shade = kShade[static_cast<int>(wf)];
+            for (int k = 0; k < 4; ++k) {
+              if (!ft) {
+                uv.uv[k][0] = -1.0f;
+                continue;
+              }
+              float a, b;
+              faceCoords(wf, std::round(q.v[k].x - cell[0]), std::round(q.v[k].y - cell[1]), std::round(q.v[k].z - cell[2]), a, b);
+              ft->uv(a, b, uv.uv[k][0], uv.uv[k][1]);
+            }
+            mesh.uvs.push_back(uv);
+          }
           exposed = true;
         }
         if (exposed && mesh.blockLines.size() < maxQuads) {

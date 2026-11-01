@@ -21,9 +21,14 @@ set_property(SOURCE "${CMAKE_BINARY_DIR}/block_map_data.S" APPEND PROPERTY OBJEC
 
 add_library(BEMatica SHARED src/main.cpp src/nbt.cpp src/mcstructure.cpp src/library.cpp src/materials_panel.cpp src/waila.cpp
             src/mesh.cpp src/hologram.cpp src/textured.cpp src/easyplace.cpp src/gzip.cpp src/blockmap.cpp src/litematic.cpp
+            src/zipfile.cpp src/image.cpp src/atlas.cpp src/texresolve.cpp src/glquads.cpp
             "${CMAKE_BINARY_DIR}/block_map_data.S")
-target_include_directories(BEMatica PRIVATE src)
-target_link_libraries(BEMatica PRIVATE preloader log z)
+# Header-only helpers the preloader SDK already fetches: JSON for the game's texture lists, stb_image for its pictures.
+FetchContent_GetProperties(nlohmann_json)
+FetchContent_GetProperties(lunasvg)
+target_include_directories(BEMatica PRIVATE src "${nlohmann_json_SOURCE_DIR}/include" "${lunasvg_SOURCE_DIR}/plutovg/source")
+find_library(gles-lib GLESv3 REQUIRED)
+target_link_libraries(BEMatica PRIVATE preloader log z ${gles-lib})
 target_compile_options(BEMatica PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-O2 -fvisibility=hidden -fvisibility-inlines-hidden -Wall>)
 # 16 KB pages are required on newer Android devices.
 target_link_options(BEMatica PRIVATE -Wl,--gc-sections -Wl,-z,max-page-size=16384 -s)
