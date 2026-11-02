@@ -4,6 +4,7 @@
 #include "mesh.hpp"
 
 #include <array>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
@@ -19,6 +20,10 @@ namespace bematica::hologram {
 // `done` reports success, or why this Minecraft version isn't supported.
 void installAsync(pl::log::Logger &log, std::function<void(bool ok, const std::string &error)> done);
 void uninstall();
+
+// The first "minecraft:..." string field of a game object (BlockType, Item), found by scanning its first 0x200 bytes the
+// first time; `offset` keeps where (one per object kind, -1 = not found yet). "" if none.
+std::string nameField(const void *obj, std::atomic<int> &offset);
 
 // Shows `s` in the world. If `atPlayer` is set, it is placed at the player's feet on the next frame.
 void show(std::shared_ptr<const Structure> s, bool atPlayer);

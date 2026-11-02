@@ -11,6 +11,7 @@
 #include <pl/memory/Hook.hpp>
 #include <pl/memory/Signature.hpp>
 
+#include <algorithm>
 #include <array>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -20,6 +21,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -501,13 +503,16 @@ Wanted wantedFor(const std::string &block) {
   return w;
 }
 
+// The client and the in-process server each have their own Item objects, so an Item is compared by its full name.
+std::string itemName(const void *item) {
+  static std::atomic<int> offset{-1};
+  return item ? hologram::nameField(reinterpret_cast<const void *>(untag(item)), offset) : std::string();
+}
+
 bool stackMatches(const void *stack, const Wanted &w) {
   if (!stack) return false;
   // An item of the wanted name decides alone: a wall sign's own block item shares its block type but places the wrong thing.
-  if (w.item) {
-    const void *item = itemOf(stack);
-    return item && untag(item) == untag(w.item);
-  }
+  if (w.item) return stackHasItem(stack) && itemName(itemOf(stack)) == w.itemName;
   const void *type = gItemBlockType(stack).blockType;
   return type && w.type && untag(type) == untag(w.type);
 }
@@ -548,11 +553,11 @@ struct MoveJob {
 MoveJob gMove;
 std::atomic<uintptr_t> gMoveFailedFor{0};  // type the last move could not do: later taps fall through to pick-block
 
-// The client's and the server's copy of a slot must give the same value, so this is the Item itself: ItemBlockType on an
-// item without a legacy block (swords, buckets...) is not stable between the two.
+// The client's and the server's copy of a slot must give the same value: the item's name (their Item objects differ, and
+// ItemBlockType on an item without a legacy block, like swords or buckets, is not stable between the two).
 uintptr_t slotType(const InventoryView &view, int slot) {
   const void *stack = itemAt(view, slot);
-  return stackHasItem(stack) ? untag(itemOf(stack)) : 0;
+  return stackHasItem(stack) ? std::hash<std::string>()(itemName(itemOf(stack))) : 0;
 }
 
 // The Inventory's setItem is a known thunk; refuse to call anything else.
@@ -1394,7 +1399,25 @@ bool install(pl::log::Logger &log, std::string &error) {
   };
   std::vector<std::string> sigs;
   for (const auto &w : wants) sigs.emplace_back(w.sig);
-  const auto found = pl::memory::resolveSignatures(sigs, "libminecraftpe.so");
+  auto found = pl::memory::resolveSignatures(sigs, "libminecraftpe.so");
+  // Another mod that loaded first may have hooked one of our functions: its jump replaced the first 16 bytes. Look again
+  // without them (the rest still matches once on 26.60) and hook on top of it.
+  for (void **hooked : {&build, &use, &serverTick, &useOn}) {
+    const Want &w = *std::find_if(std::begin(wants), std::end(wants), [&](const Want &x) { return x.out == hooked; });
+    if (found[w.sig]) continue;
+    std::string masked;
+    size_t token = 0;
+    for (std::string_view rest = w.sig; !rest.empty(); ++token) {
+      const size_t space = rest.find(' ');
+      masked += (token ? " " : "") + std::string(token < 16 ? "?" : rest.substr(0, space));
+      rest = space == std::string_view::npos ? std::string_view{} : rest.substr(space + 1);
+    }
+    const std::vector<std::string> one{masked};
+    if (const auto again = pl::memory::resolveSignatures(one, "libminecraftpe.so"); again.count(masked) && again.at(masked)) {
+      found[w.sig] = again.at(masked);
+      log.info("BE-Matica: {} was already hooked by another mod, hooking on top of it", w.name);
+    }
+  }
   for (const auto &w : wants) {
     const auto it = found.find(w.sig);
     const bool optional = w.out == reinterpret_cast<void **>(&gSelectSlot) ||

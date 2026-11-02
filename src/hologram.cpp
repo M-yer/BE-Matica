@@ -442,6 +442,21 @@ std::string nameAt(const char *at) {
   return {};
 }
 
+}  // namespace
+
+std::string nameField(const void *obj, std::atomic<int> &offset) {
+  const char *o = static_cast<const char *>(obj);
+  if (const int at = offset.load(std::memory_order_relaxed); at >= 0) return nameAt(o + at);
+  for (int at = 0; at < 0x200; at += 8)
+    if (std::string name = nameAt(o + at); !name.empty()) {
+      offset.store(at, std::memory_order_relaxed);
+      return name;
+    }
+  return {};
+}
+
+namespace {
+
 // The block name stored in a BlockType, cached per type: found by scanning the first 0x200 bytes once, then read at
 // the same offset. "" if the type has no such name.
 std::string blockName(uintptr_t type) {
