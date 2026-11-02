@@ -71,6 +71,76 @@ template <typename... Args> void trace(fmt::format_string<Args...> f, Args &&...
 }
 thread_local bool tInside = false;  // our own calls into buildBlock pass straight through
 
+// Auto-sneak: a click of ours on an interactable support (barrel, chest...) is handled by the server's useItemOn, which
+// would open the block. placeAt records the click here; useItemOnDetour makes the player count as sneaking for that one
+// call. The server handles it on its own thread after our client call returned, so the record outlives the call.
+std::atomic<UseItemOnFn> gUseOnOrig{nullptr};
+void *gUseOnTarget = nullptr;
+std::mutex gSneakMutex;
+struct SneakClick {
+  bool armed = false;
+  BlockPos pos{};
+  std::thread::id client;
+  std::chrono::steady_clock::time_point at;
+} gSneak;
+
+// The player's MoveInputComponent, found the way the game's own sneak check (lib+0x10193c20) finds it.
+uint32_t *moveInputOf(void *actor) {
+  const char *ctx = static_cast<char *>(actor) + off::Actor_entityContext;
+  const char *reg = *reinterpret_cast<char *const *>(ctx + 0x8);
+  const uint32_t entity = *reinterpret_cast<const uint32_t *>(ctx + 0x10);
+  if (!reg) return nullptr;
+  const auto *buckets = *reinterpret_cast<const int64_t *const *>(reg + 0x38);
+  const auto *bucketsEnd = *reinterpret_cast<const int64_t *const *>(reg + 0x40);
+  const char *entries = *reinterpret_cast<char *const *>(reg + 0x50);
+  const char *entriesEnd = *reinterpret_cast<char *const *>(reg + 0x58);
+  const auto nBuckets = static_cast<uint32_t>(bucketsEnd - buckets);
+  if (!buckets || !nBuckets) return nullptr;
+  const int64_t *link = buckets + ((nBuckets - 1) & off::MoveInputComponent_hash);
+  const char *e = nullptr;
+  for (int guard = 0; guard < 4096; ++guard) {
+    if (*link == -1) return nullptr;
+    e = entries + *link * 0x20;
+    if (*reinterpret_cast<const uint32_t *>(e + 8) == off::MoveInputComponent_hash) break;
+    link = reinterpret_cast<const int64_t *>(e);
+  }
+  if (!e || e == entriesEnd) return nullptr;
+  const char *pool = *reinterpret_cast<char *const *>(e + 0x10);
+  if (!pool) return nullptr;
+  const auto *pages = *reinterpret_cast<const uint32_t *const *const *>(pool + 0x8);
+  const auto *pagesEnd = *reinterpret_cast<const uint32_t *const *const *>(pool + 0x10);
+  const uint32_t page = (entity >> 11) & 0x7f;
+  if (page >= static_cast<uint32_t>(pagesEnd - pages) || !pages[page]) return nullptr;
+  const uint32_t slot = pages[page][entity & 0x7ff];
+  if ((slot ^ (entity & 0xfffc0000)) >= 0x3ffff) return nullptr;  // entity not in this pool (or stale version)
+  char *chunk = (*reinterpret_cast<char *const *const *>(pool + 0x50))[slot >> 7];
+  return chunk ? reinterpret_cast<uint32_t *>(chunk + (slot & 0x7f) * off::MoveInputComponent_size) : nullptr;
+}
+
+InteractionResult useItemOnDetour(void *gm, void *stack, const BlockPos *pos, uint64_t face, const void *clickPos,
+                                  uint64_t slot, const void *block, uint64_t first) {
+  UseItemOnFn orig;
+  while (!(orig = gUseOnOrig.load(std::memory_order_acquire))) std::this_thread::yield();
+  bool sneak = false;
+  {
+    std::lock_guard lock(gSneakMutex);
+    if (gSneak.armed && std::chrono::steady_clock::now() - gSneak.at > std::chrono::seconds(2)) gSneak.armed = false;
+    if (gSneak.armed && pos && pos->x == gSneak.pos.x && pos->y == gSneak.pos.y && pos->z == gSneak.pos.z) {
+      sneak = true;
+      // The client's own prediction runs first on our thread; the server's call is the one that counts.
+      if (std::this_thread::get_id() != gSneak.client) gSneak.armed = false;
+    }
+  }
+  void *player = *reinterpret_cast<void **>(static_cast<char *>(gm) + off::GameMode_player);
+  uint32_t *input = sneak && player ? moveInputOf(player) : nullptr;
+  const uint32_t saved = input ? input[0] : 0;
+  if (input) input[0] = saved | 1u;
+  const InteractionResult r = orig(gm, stack, pos, face, clickPos, slot, block, first);
+  if (input) input[0] = (input[0] & ~1u) | (saved & 1u);
+  if (sneak) trace("EasyPlace: auto-sneak on {} {} {} -> {}", pos->x, pos->y, pos->z, input ? "ok" : "unavailable");
+  return r;
+}
+
 // Bedrock block faces: down, up, north (-z), south (+z), west (-x), east (+x).
 constexpr int kFaceDir[6][3] = {{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}};
 
@@ -263,9 +333,15 @@ bool placeAt(void *gm, void *player, const World &w, const Cell &target, uint8_t
                        : Cell{target[0] - kFaceDir[face][0], target[1] - kFaceDir[face][1],
                               target[2] - kFaceDir[face][2]};
     // Clicking a barrel/chest opens it unless the player sneaks; when sneaking it places with the right facing.
-    if (step == 0 && !w.isAir(n) && interactable(w, n)) say("Sneak while tapping here");
+    const bool useSupport = !air && !w.isAir(n) && interactable(w, n);
+    const bool autoSneak = gUseOnTarget != nullptr;
+    if (step == 0 && useSupport && !autoSneak) say("Sneak while tapping here");
     if (!air && (w.isAir(n) || (otherSupport && step > 0 && interactable(w, n)))) continue;
     const BlockPos pos{n[0], n[1], n[2]};
+    if (useSupport && autoSneak) {
+      std::lock_guard lock(gSneakMutex);
+      gSneak = {true, pos, std::this_thread::get_id(), std::chrono::steady_clock::now()};
+    }
     const float hit[3] = {n[0] + 0.5f + 0.5f * kFaceDir[clickFace][0], n[1] + 0.5f + 0.5f * kFaceDir[clickFace][1],
                           n[2] + 0.5f + 0.5f * kFaceDir[clickFace][2]};
 
@@ -1294,10 +1370,11 @@ bool install(pl::log::Logger &log, std::string &error) {
     const char *name, *sig;
     void **out;
   };
-  void *build = nullptr, *use = nullptr, *serverTick = nullptr;
+  void *build = nullptr, *use = nullptr, *serverTick = nullptr, *useOn = nullptr;
   const Want wants[] = {
       {"BuildBlock", sig::BuildBlock, &build},
       {"BaseUseItem", sig::BaseUseItem, &use},
+      {"UseItemOn", sig::UseItemOn, &useOn},
       {"BlockSourceGetBlock", sig::BlockSourceGetBlock, reinterpret_cast<void **>(&gGetBlock)},
       {"ItemBlockType", sig::ItemBlockType, reinterpret_cast<void **>(&gItemBlockType)},
       {"SelectSlot", sig::SelectSlot, reinterpret_cast<void **>(&gSelectSlot)},
@@ -1326,12 +1403,13 @@ bool install(pl::log::Logger &log, std::string &error) {
                           w.out == reinterpret_cast<void **>(&gGameType) ||
                           w.out == reinterpret_cast<void **>(&gItemStackCopy) ||
                           w.out == reinterpret_cast<void **>(&gItemStackFromBlock) ||
-                          w.out == reinterpret_cast<void **>(&gItemStackFromName) || w.out == &serverTick ||
+                          w.out == reinterpret_cast<void **>(&gItemStackFromName) || w.out == &serverTick || w.out == &useOn ||
                           w.out == reinterpret_cast<void **>(&gSetBlock) || w.out == reinterpret_cast<void **>(&gMakeCtx) ||
                           w.out == reinterpret_cast<void **>(&gStateByName);
     if ((it == found.end() || !it->second) && optional) {
       log.warn("BE-Matica: {} not found, {} disabled", w.name,
                w.out == reinterpret_cast<void **>(&gSelectSlot) ? "auto-select"
+               : w.out == &useOn ? "auto-sneak"
                : w.out == reinterpret_cast<void **>(&gSetBlock) || w.out == reinterpret_cast<void **>(&gMakeCtx) ||
                        w.out == reinterpret_cast<void **>(&gStateByName)
                    ? "orientation"
@@ -1360,6 +1438,15 @@ bool install(pl::log::Logger &log, std::string &error) {
   gUseOrig.store(reinterpret_cast<UseItemFn>(origSlot), std::memory_order_release);
   gUseTarget = use;
   installFacingHooks(log);
+  if (useOn) {
+    origSlot = nullptr;
+    if (pl::memory::hook(useOn, reinterpret_cast<void *>(&useItemOnDetour), &origSlot) == 0 && origSlot) {
+      gUseOnOrig.store(reinterpret_cast<UseItemOnFn>(origSlot), std::memory_order_release);
+      gUseOnTarget = useOn;
+    } else {
+      log.warn("BE-Matica: could not hook UseItemOn, auto-sneak disabled");
+    }
+  }
   if (serverTick) {
     origSlot = nullptr;
     if (pl::memory::hook(serverTick, reinterpret_cast<void *>(&serverTickDetour), &origSlot) == 0 && origSlot) {
@@ -1393,6 +1480,8 @@ void uninstall() {
   gUseTarget = nullptr;
   if (gServerTickTarget) pl::memory::unhook(gServerTickTarget, reinterpret_cast<void *>(&serverTickDetour));
   gServerTickTarget = nullptr;
+  if (gUseOnTarget) pl::memory::unhook(gUseOnTarget, reinterpret_cast<void *>(&useItemOnDetour));
+  gUseOnTarget = nullptr;
   const std::array<void *, 3> detours{reinterpret_cast<void *>(&placementDetour<0>), reinterpret_cast<void *>(&placementDetour<1>),
                                       reinterpret_cast<void *>(&placementDetour<2>)};
   for (size_t i = 0; i < gPlacementTarget.size(); ++i) {

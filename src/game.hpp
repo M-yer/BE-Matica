@@ -34,6 +34,12 @@ constexpr const char *BuildBlock =
 // GameMode::baseUseItem(ItemStack&): a tap that hits no block (aiming at air)
 constexpr const char *BaseUseItem =
     "FD 7B BC A9 FC 5F 01 A9 F6 57 02 A9 F4 4F 03 A9 FD 03 00 91 FF 83 0C D1 57 D0 3B D5 F4 03 00 AA";
+// GameMode::useItemOn(ItemStack&, const BlockPos&, uchar face, const Vec3& clickPos, slot, const Block*, bool first)
+// (GameMode vtable slot 0x70). Runs on the server for every block tap; it uses the clicked block (opens a barrel)
+// unless the player sneaks with a non-empty hand. Sneak = MoveInputComponent input bit 0 or 18.
+constexpr const char *UseItemOn =
+    "FD 7B BA A9 FC 6F 01 A9 FA 67 02 A9 F8 5F 03 A9 F6 57 04 A9 F4 4F 05 A9 FD 03 00 91 FF 03 15 D1 E7 2B 00 B9 F4 03 "
+    "00 AA";
 // BlockSource::getBlock(const BlockPos&)
 constexpr const char *BlockSourceGetBlock =
     "FF 03 01 D1 FD 7B 01 A9 F6 57 02 A9 F4 4F 03 A9 FD 43 00 91 56 D0 3B D5 C8 16 40 F9 E8 07 00 F9 28 04 40 B9 09 84 "
@@ -167,6 +173,11 @@ constexpr unsigned ScreenContext_colorHolder = 0x30;                // float[4] 
 constexpr unsigned ScreenContext_tessellator = 0xB0;
 constexpr unsigned Tessellator_postTransformOffset = 0x1CC;         // Vec3
 constexpr unsigned GameMode_player = 0x8;
+// ECS (EnTT): Actor+0x8 is its EntityContext {.., registry* at +0x8, entity id at +0x10}. Component pools are found
+// by FNV-1a(type name) in a dense map in the registry; see moveInputOf in easyplace.cpp (read at lib+0x10193c20).
+constexpr unsigned Actor_entityContext = 0x8;
+constexpr uint32_t MoveInputComponent_hash = 0x018B1887;
+constexpr size_t MoveInputComponent_size = 100;  // starts with the input-state bitset (uint32 words)
 constexpr unsigned GameMode_hasAltHit = 0x41;   // bool: the hit position below is in use
 constexpr unsigned GameMode_altHitPos = 0x6C;   // Vec3
 constexpr unsigned Level_vtGetHitResult = 0xA80; // vtable byte offset
@@ -225,6 +236,11 @@ struct HashedString {
 
 using BuildBlockFn = bool (*)(void *gameMode, const BlockPos *pos, uint8_t face, uint8_t hand, bool flag);
 using UseItemFn = bool (*)(void *gameMode, void *itemStack, uint32_t flag);
+struct InteractionResult {
+  uint64_t a, b;  // passed through untouched; a 16-byte struct keeps both x0 and x1
+};
+using UseItemOnFn = InteractionResult (*)(void *gameMode, void *itemStack, const BlockPos *pos, uint64_t face,
+                                          const void *clickPos, uint64_t slot, const void *block, uint64_t first);
 using GetBlockFn = void *(*)(void *blockSource, const BlockPos &pos);
 using ItemBlockTypeFn = BlockTypeRef (*)(const void *itemStack);
 using SelectSlotFn = bool (*)(void *playerInventory, int slot, uint8_t containerId);
