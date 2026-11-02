@@ -4,6 +4,8 @@ An open-source, Litematica-style schematic mod for **Minecraft Bedrock Edition o
 
 Load a saved build, see it as a ghost preview in your world, and build it block by block.
 
+BE-Matica is based on [Structura](https://github.com/Zxwmwmwm/Structura) by ZXW, rewritten from scratch.
+
 > **Status: early but usable.** Preview, layers, material list and Easy Place work on a test device; expect rough edges.
 
 ## Roadmap
@@ -38,6 +40,7 @@ Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first,
 
 ## Credits
 
+- [Structura](https://github.com/Zxwmwmwm/Structura) by ZXW ([Zxwmwmwm](https://github.com/Zxwmwmwm)): BE-Matica is based on Structura and rewritten from scratch; no Structura code is included.
 - Java → Bedrock block table: [PrismarineJS/minecraft-data](https://github.com/PrismarineJS/minecraft-data) (MIT), see [data/README.md](data/README.md).
 - Sample `.litematic` test files: [schematic4j](https://github.com/SandroHc/schematic4j) (MIT), see [tests/data/litematic](tests/data/litematic).
 
