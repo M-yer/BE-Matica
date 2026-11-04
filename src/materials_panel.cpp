@@ -228,6 +228,10 @@ bool MaterialsPanel::onTouch(const pl::input::TouchEvent &e) {
       value = key == "_pick" ? from + ">" + value : from;
       key = key == "_pick" ? "substitute" : key == "_held" ? "sub_held" : "sub_undo";
     }
+    if (key == "_menu") {  // the gear: LeviLauncher's mod menu, where the rest of BE-Matica's settings are
+      mm::requestOpenMenu();
+      return true;
+    }
     if (key == "_collapse") {
       collapsed_ = !collapsed_;
       redrawLocked();
@@ -510,6 +514,9 @@ void MaterialsPanel::redrawLocked() {
     bx -= s + pad;
     button(bx, y_ + pad, s, s, "", "lock", locked_ ? "0" : "1", locked_);
     icon(cmds, locked_ ? Icon::Lock : Icon::LockOpen, bx, y_ + pad, s, locked_ ? kAccent : kDim);
+    bx -= s + pad;
+    button(bx, y_ + pad, s, s, "", "_menu", "", false);
+    icon(cmds, Icon::Settings, bx, y_ + pad, s, kDim);
   }
   mm::submitDrawCommands(moduleId_, cmds);
 }
