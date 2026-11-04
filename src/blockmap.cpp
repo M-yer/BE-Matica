@@ -3,6 +3,7 @@
 #include "gzip.hpp"
 
 #include <cstdlib>
+#include <map>
 #include <unordered_set>
 #include <string_view>
 
@@ -44,6 +45,26 @@ const char *renamedJava(const std::string &name) {
   return nullptr;
 }
 
+// Calls `take` with every line of the built-in table, the version line first.
+template <class F> bool forEachLine(F &&take, std::string &error) {
+  std::string partial;  // a line cut in two by the chunk boundary
+  const bool ok = gunzipChunks({bematica_block_map, bematica_block_map_end}, [&](std::span<const uint8_t> chunk) {
+    std::string_view rest(reinterpret_cast<const char *>(chunk.data()), chunk.size());
+    for (size_t nl; (nl = rest.find('\n')) != std::string_view::npos; rest.remove_prefix(nl + 1)) {
+      if (partial.empty()) {
+        take(rest.substr(0, nl));
+      } else {
+        partial.append(rest.substr(0, nl));
+        take(partial);
+        partial.clear();
+      }
+    }
+    partial.append(rest);
+  }, error);
+  if (!partial.empty()) take(partial);
+  return ok;
+}
+
 }  // namespace
 
 BlockMap BlockMap::forBlocks(const std::vector<std::string> &javaNames) {
@@ -73,24 +94,31 @@ BlockMap BlockMap::forBlocks(const std::vector<std::string> &javaNames) {
     e.bedrock = {std::string(cols[1]), parseStates(cols[2]), version};
     m.byName_[std::string(java.substr(0, bracket))].push_back(std::move(e));
   };
-  std::string partial;  // a line cut in two by the chunk boundary
   std::string error;
-  const bool ok = gunzipChunks({bematica_block_map, bematica_block_map_end}, [&](std::span<const uint8_t> chunk) {
-    std::string_view rest(reinterpret_cast<const char *>(chunk.data()), chunk.size());
-    for (size_t nl; (nl = rest.find('\n')) != std::string_view::npos; rest.remove_prefix(nl + 1)) {
-      if (partial.empty()) {
-        takeLine(rest.substr(0, nl));
-      } else {
-        partial.append(rest.substr(0, nl));
-        takeLine(partial);
-        partial.clear();
-      }
-    }
-    partial.append(rest);
-  }, error);
-  if (!partial.empty()) takeLine(partial);
+  const bool ok = forEachLine(takeLine, error);
   if (ok) m.version_ = version;
   return m;
+}
+
+const std::vector<BlockState> &BlockMap::bedrockBlocks() {
+  static const std::vector<BlockState> blocks = [] {
+    std::map<std::string, BlockState> byName;
+    int32_t version = 0;
+    std::string error;
+    forEachLine([&](std::string_view line) {
+      if (!version) {
+        version = std::atoi(std::string(line).c_str());
+        return;
+      }
+      const auto cols = split(line, '\t');
+      if (cols.size() != 3 || byName.count(std::string(cols[1]))) return;
+      byName.emplace(std::string(cols[1]), BlockState{std::string(cols[1]), parseStates(cols[2]), version});
+    }, error);
+    std::vector<BlockState> out;
+    for (auto &[name, state] : byName) out.push_back(std::move(state));
+    return out;
+  }();
+  return blocks;
 }
 
 bool BlockMap::toBedrock(const std::string &javaName, const Props &props, BlockState &out) const {

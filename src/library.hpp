@@ -22,4 +22,8 @@ struct Material {
 // Blocks needed to build the structure, most-used first. Air and structure voids are left out.
 std::vector<Material> countMaterials(const Structure &s);
 
+// Every block named `from` (without "minecraft:") becomes `to`. States that `to` also has keep the old block's value,
+// so stairs stay turned the same way; the others come from `to`.
+void substituteBlock(Structure &s, const std::string &from, const BlockState &to);
+
 }  // namespace bematica

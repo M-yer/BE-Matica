@@ -22,5 +22,8 @@ void setEnabled(bool enabled);
 void setAirPlace(bool on);
 // Auto-select: when the held block is wrong, switch to the hotbar slot that has the wanted one.
 void setAutoSelect(bool on);
+// The next block tap places nothing: `done` gets the full name of the item in the player's hand instead
+// ("minecraft:cobblestone", or "" for an empty hand). Works whether Easy Place is on or not.
+void captureHeldOnce(std::function<void(const std::string &)> done);
 
 }  // namespace bematica::easyplace

@@ -40,6 +40,16 @@ constexpr float kReach = 6.0f;  // blocks; how far a tap into the air can reach 
 GetBlockFn gGetBlock = nullptr;
 ItemBlockTypeFn gItemBlockType = nullptr;
 HandItemFn gHandItem = nullptr;
+std::mutex gCaptureMu;
+std::function<void(const std::string &)> gCapture;  // set by captureHeldOnce, taken by the next block tap
+
+bool takeCapture(std::function<void(const std::string &)> &out) {
+  std::lock_guard lock(gCaptureMu);
+  if (!gCapture) return false;
+  out = std::move(gCapture);
+  gCapture = nullptr;
+  return true;
+}
 SelectSlotFn gSelectSlot = nullptr;
 ItemStackHasItemFn gItemStackHasItem = nullptr;
 PickBlockFn gPickBlock = nullptr;
@@ -1251,6 +1261,11 @@ bool buildBlockInner(void *gm, const BlockPos *pos, uint8_t face, uint8_t hand, 
   BuildBlockFn orig;
   while (!(orig = gBuildOrig.load(std::memory_order_acquire))) std::this_thread::yield();
   if (tInside) return orig(gm, pos, face, hand, flag);
+  if (std::function<void(const std::string &)> capture; gm && takeCapture(capture)) {
+    const void *stack = gHandItem(at<void *>(gm, off::GameMode_player), 0);
+    capture(stack && stackHasItem(stack) ? itemName(itemOf(stack)) : std::string());
+    return false;
+  }
   Context ctx;
   if (!gEnabled.load(std::memory_order_relaxed) || !gm || !pos || face > 5 || !context(gm, ctx)) {
     trace("EasyPlace build: pass (enabled={} context={})", gEnabled.load(), gm && pos && face <= 5);
@@ -1516,6 +1531,11 @@ void uninstall() {
 
 void setEnabled(bool enabled) { gEnabled = enabled; }
 void setAirPlace(bool on) { gAirPlace = on; }
+void captureHeldOnce(std::function<void(const std::string &)> done) {
+  std::lock_guard lock(gCaptureMu);
+  gCapture = std::move(done);
+}
+
 void setAutoSelect(bool on) { gAutoSelect = on; }
 
 }  // namespace bematica::easyplace

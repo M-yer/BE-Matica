@@ -24,6 +24,9 @@ public:
 
   int32_t version() const { return version_; }
 
+  // One state per Bedrock block in the table (the first one listed for it), sorted by name. Read once, then kept.
+  static const std::vector<BlockState> &bedrockBlocks();
+
 private:
   struct Entry {
     Props javaProps;

@@ -66,4 +66,16 @@ std::vector<Material> countMaterials(const Structure &s) {
   return out;
 }
 
+void substituteBlock(Structure &s, const std::string &from, const BlockState &to) {
+  const std::string full = "minecraft:" + from;
+  for (auto &entry : s.palette) {
+    if (entry.name != full && entry.name != from) continue;
+    BlockState next = to;
+    for (size_t k = 0; k < next.states.keys.size(); ++k)
+      if (const nbt::Tag *old = entry.states.get(next.states.keys[k], next.states.items[k].type))
+        next.states.items[k] = *old;
+    entry = std::move(next);
+  }
+}
+
 }  // namespace bematica
