@@ -42,6 +42,7 @@ private:
   void closeSubLocked();
   void redrawLocked();
   bool insideLocked(float x, float y) const;
+  bool onButtonLocked(float x, float y) const;
 
   struct Control {
     float x, y, w, h;
@@ -73,7 +74,12 @@ private:
 
   int activePointer_ = -1;
   float downX_ = 0, downY_ = 0, lastX_ = 0, lastY_ = 0;
-  bool dragged_ = false, movingPanel_ = false;
+  bool dragged_ = false, movingPanel_ = false, movingButton_ = false;
+
+  // The floating cube button: always on screen while the panel module is on, tap to open or close the panel,
+  // drag to move it. bx_/by_ is negative until the first redraw places it left of the panel.
+  bool open_ = true;
+  float bx_ = -1, by_ = -1, bs_ = 0;
 
   std::string toast_;
   uint64_t toastId_ = 0;

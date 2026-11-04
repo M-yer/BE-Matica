@@ -32,13 +32,6 @@ constexpr const char *kModule = "bematica.main";
 // Its own module so the control panel can be switched on and off in the launcher.
 constexpr const char *kControlsModule = "bematica.controls";
 constexpr const char *kLookModule = "bematica.lookat";
-constexpr const char *kPanelButton = "bematica.panel";
-// Lucide "box" (ISC), white so it shows on the launcher's dark keycap.
-constexpr const char *kPanelButtonSvg =
-    R"(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" )"
-    R"(stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 )"
-    R"(0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/>)"
-    R"(<path d="M12 22V12"/></svg>)";
 
 // The launcher app can always read its own folder on shared storage; Download needs "All files access".
 fs::path appStorageDir() {
@@ -99,25 +92,6 @@ public:
              })
              .registerModule();
     if (!ok) ctx.logger().warn("BE-Matica: controls module registration failed");
-    // Floating button that shows and hides the panel (same as switching BE-Matica Controls). The launcher only
-    // collects buttons when the game starts, so it is registered here.
-    ok = mm::ButtonBuilder(kPanelButton, "BE-Matica panel")
-             .moduleId(kModule)  // not the Controls module: the button must stay while the panel is hidden
-             .modId(ctx.id())
-             .label("BE")
-             .svgIcon(kPanelButtonSvg)
-             .onEvent([this](std::string_view, mm::ButtonEvent event, float) {
-               if (event != mm::ButtonEvent::Click) return;
-               bool on;
-               {
-                 std::lock_guard lock(mu_);
-                 on = controls_ = !controls_;
-                 syncPanelLocked();
-               }
-               mm::setModuleEnabled(kControlsModule, on);
-             })
-             .registerButton();
-    if (!ok) ctx.logger().warn("BE-Matica: panel button registration failed");
     ok = mm::ModuleBuilder(kLookModule, "BE-Matica Look-at")
              .description("Card naming the block under the crosshair.")
              .modId(ctx.id())
@@ -218,7 +192,6 @@ public:
     easyplace::uninstall();
     mm::clearConfigSchema(kModule);
     mm::unregisterModule(kModule);
-    mm::unregisterButton(kPanelButton);
     mm::unregisterModule(kControlsModule);
     mm::unregisterModule(kLookModule);
     ctx.logger().info("BE-Matica disabled");

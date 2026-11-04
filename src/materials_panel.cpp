@@ -159,7 +159,11 @@ void MaterialsPanel::setProgress(size_t built, size_t total) {
 }
 
 bool MaterialsPanel::insideLocked(float x, float y) const {
-  return visible_ && x >= x_ && x <= x_ + w_ && y >= y_ && y <= y_ + h_;
+  return visible_ && open_ && x >= x_ && x <= x_ + w_ && y >= y_ && y <= y_ + h_;
+}
+
+bool MaterialsPanel::onButtonLocked(float x, float y) const {
+  return visible_ && x >= bx_ && x <= bx_ + bs_ && y >= by_ && y <= by_ + bs_;
 }
 
 bool MaterialsPanel::onTouch(const pl::input::TouchEvent &e) {
@@ -168,21 +172,26 @@ bool MaterialsPanel::onTouch(const pl::input::TouchEvent &e) {
     std::lock_guard lock(mu_);
     const int action = e.action & 0xff;
     if (activePointer_ < 0) {
-      if ((action == kDown || action == kPointerDown) && insideLocked(e.x, e.y)) {
+      const bool onButton = onButtonLocked(e.x, e.y);
+      if ((action == kDown || action == kPointerDown) && (onButton || insideLocked(e.x, e.y))) {
         activePointer_ = e.pointerId;
         downX_ = lastX_ = e.x;
         downY_ = lastY_ = e.y;
         dragged_ = false;
-        movingPanel_ = e.y < y_ + headerH_;  // the header drags the panel; its buttons still work as taps
+        movingButton_ = onButton;
+        movingPanel_ = !onButton && e.y < y_ + headerH_;  // the header drags the panel; its buttons still work as taps
         return true;
       }
       return false;
     }
-    if (e.pointerId != activePointer_) return insideLocked(e.x, e.y);
+    if (e.pointerId != activePointer_) return onButtonLocked(e.x, e.y) || insideLocked(e.x, e.y);
 
     if (action == kMove) {
       if (std::hypot(e.x - downX_, e.y - downY_) > row_ * 0.3f) dragged_ = true;
-      if (dragged_ && movingPanel_) {
+      if (dragged_ && movingButton_) {
+        bx_ += e.x - lastX_, by_ += e.y - lastY_;
+        redrawLocked();
+      } else if (dragged_ && movingPanel_) {
         px_ += e.x - lastX_, py_ += e.y - lastY_;
         redrawLocked();
       } else if (dragged_ && tab_ == Tab::Blocks && downY_ > listTop_) {
@@ -195,6 +204,15 @@ bool MaterialsPanel::onTouch(const pl::input::TouchEvent &e) {
     if (action != kUp && action != kPointerUp && action != kCancel) return true;
     activePointer_ = -1;
     if (dragged_ || action == kCancel) return true;
+    if (movingButton_) {
+      open_ = !open_;
+      if (!open_ && typing_) {
+        typing_ = false;
+        pl::input::hideKeyboard();
+      }
+      redrawLocked();
+      return true;
+    }
     for (const auto &c : controls_)
       if (e.x >= c.x && e.x <= c.x + c.w && e.y >= c.y && e.y <= c.y + c.h) key = c.key, value = c.value;
     // Panel-only buttons start with '_' and never reach the mod.
@@ -517,6 +535,23 @@ void MaterialsPanel::redrawLocked() {
     bx -= s + pad;
     button(bx, y_ + pad, s, s, "", "_menu", "", false);
     icon(cmds, Icon::Settings, bx, y_ + pad, s, kDim);
+    // Closed: the panel is laid out (so it reopens where it was) but nothing of it is drawn or tappable.
+    if (!open_) {
+      cmds.resize(toastCount);
+      controls_.clear();
+    }
+
+    // The cube button, drawn last so it stays on top.
+    bs_ = std::round(headerH_ * 1.05f);
+    if (bx_ < 0) bx_ = px_ - bs_ - pad * 2, by_ = py_;
+    bx_ = std::clamp(bx_, 0.0f, sw - bs_);
+    by_ = std::clamp(by_, 0.0f, sh - bs_);
+    // A smooth circle: slightly see-through charcoal, mint ring and cube while the panel is open.
+    const std::string badge = icons::badge(Icon::Box, static_cast<int>(bs_), 0xE618191C, open_ ? kAccent : kBorder,
+                                           open_ ? kAccent : kText);
+    if (!badge.empty())
+      cmds.push_back({.type = mm::DrawCommandType::Image, .x = std::round(bx_), .y = std::round(by_), .w = bs_, .h = bs_,
+                      .color = 0xFFFFFFFF, .imageId = badge});
   }
   mm::submitDrawCommands(moduleId_, cmds);
 }
