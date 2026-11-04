@@ -41,6 +41,7 @@ Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first,
 ## Credits
 
 - [Structura](https://github.com/Zxwmwmwm/Structura) by ZXW ([Zxwmwmwm](https://github.com/Zxwmwmwm)): BE-Matica is based on Structura and rewritten from scratch; no Structura code is included.
+- Panel icons from [Lucide](https://lucide.dev) (ISC licence, © Lucide Icons and Contributors), drawn with [lunasvg](https://github.com/sammycage/lunasvg) (MIT).
 - Java → Bedrock block table: [PrismarineJS/minecraft-data](https://github.com/PrismarineJS/minecraft-data) (MIT), see [data/README.md](data/README.md).
 - Sample `.litematic` test files: [schematic4j](https://github.com/SandroHc/schematic4j) (MIT), see [tests/data/litematic](tests/data/litematic).
 

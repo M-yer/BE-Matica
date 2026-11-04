@@ -2,6 +2,7 @@
 #include "materials_panel.hpp"
 
 #include "blockmap.hpp"
+#include "icons.hpp"
 
 #include <pl/ModMenu.hpp>
 
@@ -311,51 +312,15 @@ std::string fitText(std::string s, float font, float maxW) {
   return s + "\xE2\x80\xA6";
 }
 
-enum class Icon { List, Move, Up, Down, Left, Right, Lock };
+using icons::Icon;
 
-// Icons from plain rectangles, centred in an s x s square at (x, y).
-void icon(std::vector<mm::DrawCommand> &cmds, Icon which, float x, float y, float s, uint32_t color = kText,
-          uint32_t hole = kButton) {
-  const float cx = x + s / 2, cy = y + s / 2, t = std::max(2.0f, std::round(s * 0.09f));
-  switch (which) {
-  case Icon::List:
-    for (int k = -1; k <= 1; ++k) rect(cmds, cx - s * 0.25f, cy + k * s * 0.2f - t / 2, s * 0.5f, t, color);
-    break;
-  case Icon::Move:
-    rect(cmds, cx - s * 0.3f, cy - t / 2, s * 0.6f, t, color);
-    rect(cmds, cx - t / 2, cy - s * 0.3f, t, s * 0.6f, color);
-    for (int k = 1; k <= 2; ++k) {  // stepped arrowheads at the four tips
-      const float a = s * 0.3f - k * t, b = t * (2 * k + 1);
-      rect(cmds, cx - b / 2, cy - a - t / 2, b, t, color);
-      rect(cmds, cx - b / 2, cy + a - t / 2, b, t, color);
-      rect(cmds, cx - a - t / 2, cy - b / 2, t, b, color);
-      rect(cmds, cx + a - t / 2, cy - b / 2, t, b, color);
-    }
-    break;
-  case Icon::Lock: {  // shackle (three bars) over a body with a keyhole
-    const float bw = s * 0.46f, bh = s * 0.3f, top = cy - s * 0.02f;
-    rect(cmds, cx - bw * 0.35f, top - s * 0.24f, t, s * 0.24f, color);
-    rect(cmds, cx + bw * 0.35f - t, top - s * 0.24f, t, s * 0.24f, color);
-    rect(cmds, cx - bw * 0.35f, top - s * 0.24f, bw * 0.7f, t, color);
-    rect(cmds, cx - bw / 2, top, bw, bh, color);
-    rect(cmds, cx - t / 2, top + bh * 0.3f, t, bh * 0.4f, hole);
-    break;
-  }
-  case Icon::Up:
-  case Icon::Down:
-    for (int k = 0; k < 4; ++k) {  // a stepped triangle, 4 rows
-      const float rowY = which == Icon::Up ? cy - s * 0.12f + k * t : cy + s * 0.12f - (k + 1) * t;
-      rect(cmds, cx - (k + 0.5f) * t, rowY, (2 * k + 1) * t, t, color);
-    }
-    break;
-  case Icon::Left:
-  case Icon::Right:
-    for (int k = 0; k < 4; ++k) {  // the same triangle on its side
-      const float colX = which == Icon::Left ? cx - s * 0.12f + k * t : cx + s * 0.12f - (k + 1) * t;
-      rect(cmds, colX, cy - (k + 0.5f) * t, t, (2 * k + 1) * t, color);
-    }
-    break;
-  }
+// A Lucide icon centred in an s x s square at (x, y), drawn at 60% of the square.
+void icon(std::vector<mm::DrawCommand> &cmds, Icon which, float x, float y, float s, uint32_t color = kText) {
+  const float px = std::round(s * 0.6f);
+  const std::string id = icons::image(which, static_cast<int>(px), color);
+  if (id.empty()) return;
+  cmds.push_back({.type = mm::DrawCommandType::Image, .x = std::round(x + (s - px) / 2), .y = std::round(y + (s - px) / 2),
+                  .w = px, .h = px, .color = 0xFFFFFFFF, .imageId = id});
 }
 
 }  // namespace
@@ -403,14 +368,14 @@ void MaterialsPanel::redrawLocked() {
           button(bx, by, c, c, "", key, "", false);
           icon(cmds, which, bx, by, c);
         };
-        arrow(dx + c + gap, yy, Icon::Up, "forward");
-        arrow(dx, yy + c + gap, Icon::Left, "left");
-        arrow(dx + (c + gap) * 2, yy + c + gap, Icon::Right, "right");
-        arrow(dx + c + gap, yy + (c + gap) * 2, Icon::Down, "back");
+        arrow(dx + c + gap, yy, Icon::ArrowUp, "forward");
+        arrow(dx, yy + c + gap, Icon::ArrowLeft, "left");
+        arrow(dx + (c + gap) * 2, yy + c + gap, Icon::ArrowRight, "right");
+        arrow(dx + c + gap, yy + (c + gap) * 2, Icon::ArrowDown, "back");
         const float yx = dx + (c + gap) * 3 + pad * 2;
-        arrow(yx, yy, Icon::Up, "up");
+        arrow(yx, yy, Icon::ArrowUp, "up");
         text(cmds, yx + (c - textWidth("Y", font)) / 2, yy + c + gap + (c - font) / 2, font, kDim, "Y");
-        arrow(yx, yy + (c + gap) * 2, Icon::Down, "down");
+        arrow(yx, yy + (c + gap) * 2, Icon::ArrowDown, "down");
         yy += (c + gap) * 3 + pad;
         button(x_ + pad, yy, half, ctrlH, "Rotate +90°", "rotate", "", false);
         button(x_ + pad * 2 + half, yy, half, ctrlH, "Mirror", "mirror", "", mirror_);
@@ -505,9 +470,7 @@ void MaterialsPanel::redrawLocked() {
           text(cmds, nameX, ry + (row_ - font) / 2, font, color,
                fitText((done ? "\xE2\x9C\x93 " : "") + materials_[k].name + (materials_[k].was.empty() ? "" : " *"), font,
                        countX - nameX - font * 0.5f));
-          for (int d = -1; d <= 1; ++d)
-            rect(cmds, dotsX + dotsW / 2 + d * font * 0.3f - font * 0.07f, ry + row_ / 2 - font * 0.07f, font * 0.14f,
-                 font * 0.14f, kDim);
+          icon(cmds, Icon::Ellipsis, dotsX + (dotsW - row_) / 2, ry, row_, kDim);
           controls_.push_back({dotsX, ry, dotsW, row_, "_sub", materials_[k].name.c_str()});
         }
         if (maxScroll > 0) {
@@ -537,7 +500,7 @@ void MaterialsPanel::redrawLocked() {
     const float s = headerH_ - pad * 2;
     float bx = x_ + w_ - pad - s;
     button(bx, y_ + pad, s, s, "", "_collapse", "", false);
-    icon(cmds, collapsed_ ? Icon::Down : Icon::Up, bx, y_ + pad, s, kDim);
+    icon(cmds, collapsed_ ? Icon::ChevronDown : Icon::ChevronUp, bx, y_ + pad, s, kDim);
     bx -= s + pad;
     button(bx, y_ + pad, s, s, "", "_tab", "move", !collapsed_ && tab_ == Tab::Move);
     icon(cmds, Icon::Move, bx, y_ + pad, s, !collapsed_ && tab_ == Tab::Move ? kAccent : kDim);
@@ -546,7 +509,7 @@ void MaterialsPanel::redrawLocked() {
     icon(cmds, Icon::List, bx, y_ + pad, s, !collapsed_ && tab_ == Tab::Blocks ? kAccent : kDim);
     bx -= s + pad;
     button(bx, y_ + pad, s, s, "", "lock", locked_ ? "0" : "1", locked_);
-    icon(cmds, Icon::Lock, bx, y_ + pad, s, locked_ ? kAccent : kDim, locked_ ? kActiveFill : kButton);
+    icon(cmds, locked_ ? Icon::Lock : Icon::LockOpen, bx, y_ + pad, s, locked_ ? kAccent : kDim);
   }
   mm::submitDrawCommands(moduleId_, cmds);
 }
