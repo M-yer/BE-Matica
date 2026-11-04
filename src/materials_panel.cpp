@@ -301,6 +301,16 @@ float textWidth(const std::string &s, float font) {
   return font * em;
 }
 
+// `s` cut to fit `maxW`, ending in an ellipsis when cut.
+std::string fitText(std::string s, float font, float maxW) {
+  if (textWidth(s, font) <= maxW) return s;
+  while (!s.empty() && textWidth(s + "\xE2\x80\xA6", font) > maxW) {
+    while (!s.empty() && (static_cast<unsigned char>(s.back()) & 0xC0) == 0x80) s.pop_back();
+    if (!s.empty()) s.pop_back();
+  }
+  return s + "\xE2\x80\xA6";
+}
+
 enum class Icon { List, Move, Up, Down, Left, Right, Lock };
 
 // Icons from plain rectangles, centred in an s x s square at (x, y).
@@ -426,7 +436,8 @@ void MaterialsPanel::redrawLocked() {
         bool substituted = false;
         for (const auto &m : materials_)
           if (m.name == subFor_) count = m.count, substituted = !m.was.empty();
-        text(cmds, x_ + pad * 2, yy + (row_ - font) / 2, font, kDim, "Replace " + subFor_ + "  (" + countText(count) + ")");
+        text(cmds, x_ + pad * 2, yy + (row_ - font) / 2, font, kDim,
+             fitText("Replace " + subFor_ + "  (" + countText(count) + ")", font, w_ - pad * 4));
         yy += row_ + pad;
         const float boxX = x_ + pad, boxW = w_ - pad * 2;
         card(cmds, boxX, yy, boxW, ctrlH, radius, edge, kWell, typing_ ? kAccent : kBorder);
@@ -449,7 +460,7 @@ void MaterialsPanel::redrawLocked() {
           const float ry = listTop_ + k * row_ - scroll_;
           if (ry + row_ > listBottom_) break;
           if (k % 2) rect(cmds, wellX, ry, wellW, row_, kStripe);
-          text(cmds, wellX + font * 0.5f, ry + (row_ - font) / 2, font, kText, results_[k]);
+          text(cmds, wellX + font * 0.5f, ry + (row_ - font) / 2, font, kText, fitText(results_[k], font, wellW - font * 1.5f));
           controls_.push_back({wellX, ry, wellW, row_, "_pick", results_[k].c_str()});
         }
         yy = listBottom_ + pad;
@@ -478,23 +489,26 @@ void MaterialsPanel::redrawLocked() {
         const float contentH = row_ * materials_.size();
         const float maxScroll = std::max(0.0f, contentH - (listBottom_ - listTop_));
         scroll_ = std::clamp(scroll_, 0.0f, maxScroll);
-        const float dotsW = row_ * 1.4f;  // the row's ⋯ button, at its right end
+        // Each row, left to right: name (cut to fit), count (right-aligned), the ⋯ button, then room for the scrollbar.
+        const float dotsW = row_ * 1.1f, dotsX = wellX + wellW - font * 0.7f - dotsW;
         for (size_t k = static_cast<size_t>(scroll_ / row_); k < materials_.size(); ++k) {
           const float ry = listTop_ + k * row_ - scroll_;
           if (ry + row_ > listBottom_) break;
           const bool done = done_.count(materials_[k].name) > 0;
           if (k % 2) rect(cmds, wellX, ry, wellW, row_, kStripe);
           const uint32_t color = done ? kAccent : kText;
+          const std::string count = countText(materials_[k].count);
+          const float countX = dotsX - textWidth(count, font);
+          text(cmds, countX, ry + (row_ - font) / 2, font, done ? kAccent : kDim, count);
           // A substituted block is marked with *; its ⋯ view offers Undo.
-          text(cmds, wellX + font * 0.5f, ry + (row_ - font) / 2, font, color,
-               (done ? "\xE2\x9C\x93 " : "") + materials_[k].name + (materials_[k].was.empty() ? "" : " *"));
-          text(cmds, x_ + w_ * 0.58f, ry + (row_ - font) / 2, font, done ? kAccent : kDim,
-               countText(materials_[k].count));
-          const float dx = wellX + wellW - dotsW - font * 0.5f;
+          const float nameX = wellX + font * 0.5f;
+          text(cmds, nameX, ry + (row_ - font) / 2, font, color,
+               fitText((done ? "\xE2\x9C\x93 " : "") + materials_[k].name + (materials_[k].was.empty() ? "" : " *"), font,
+                       countX - nameX - font * 0.5f));
           for (int d = -1; d <= 1; ++d)
-            rect(cmds, dx + dotsW / 2 + d * font * 0.32f - font * 0.07f, ry + row_ / 2 - font * 0.07f, font * 0.14f,
+            rect(cmds, dotsX + dotsW / 2 + d * font * 0.3f - font * 0.07f, ry + row_ / 2 - font * 0.07f, font * 0.14f,
                  font * 0.14f, kDim);
-          controls_.push_back({dx, ry, dotsW + font * 0.5f, row_, "_sub", materials_[k].name.c_str()});
+          controls_.push_back({dotsX, ry, dotsW, row_, "_sub", materials_[k].name.c_str()});
         }
         if (maxScroll > 0) {
           const float trackH = listBottom_ - listTop_, barH = std::max(row_, trackH * trackH / contentH);
