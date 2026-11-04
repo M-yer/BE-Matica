@@ -14,7 +14,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -206,6 +205,8 @@ private:
     if (publishing_) return;  // the launcher echoing values from the page we are setting
     if (onSubstituteLocked(key, value)) return;
     if (key == "file") {
+      // The launcher can send the chosen file again on its own; reloading would drop substitutions.
+      if (value == loadedName_) return;
       loadLocked(std::string(value));
     } else if (key == "refresh") {
       scanLocked();
@@ -516,7 +517,6 @@ private:
     loadedName_ = name;
     // Substitutions belong to one placement: only a restored placement (`view` given) keeps them.
     if (!view) subs_.clear();
-    subFor_.clear();
     originalNames_.clear();
     for (const auto &m : countMaterials(original_)) originalNames_.push_back(m.name);
     applySubsLocked();
@@ -546,6 +546,7 @@ private:
                                                       blocks.empty() ? 0 : blocks.front().version});
     }
     materials_ = countMaterials(loaded_);
+    for (auto &m : materials_) m.was = wasLocked(m.name);
   }
 
   // Shows the substituted structure in place: same origin and view, Easy Place and progress follow it.
@@ -560,11 +561,14 @@ private:
 
   void addSubLocked(const std::string &from, std::string to) {
     if (to.rfind("minecraft:", 0) == 0) to.erase(0, 10);
-    subFor_.clear();
-    if (to.empty() || to == from) return publishLocked();
+    if (to.empty() || to == from) return;
     subs_.emplace_back(from, to);
-    panel_.toast(from + " \u2192 " + to);
     resubLocked();
+    size_t now = 0;
+    for (const auto &m : materials_)
+      if (m.name == to) now = m.count;
+    ctx_->logger().info("BE-Matica: substitute {} -> {} ({} {} now)", from, to, now, to);
+    panel_.toast(from + " \u2192 " + to);
   }
 
   // The original blocks that now show as `name`, e.g. "smooth_stone" for a cobblestone that replaced it.
@@ -579,91 +583,35 @@ private:
     return was;
   }
 
-  // Materials tab: tap a row to substitute it. Returns false if `key` isn't one of these controls.
+  // The panel's Substitute view. Returns false if `key` isn't one of its keys.
   bool onSubstituteLocked(std::string_view key, std::string_view value) {
-    if (key.rfind("sub_open:", 0) == 0) {
-      subFor_ = key.substr(9);
-      subSearch_.clear();
-    } else if (key == "sub_search") {
-      subSearch_ = value;  // applied with the Search button: rebuilding the page while typing resets the field
-      return true;
-    } else if (key == "sub_find") {
-    } else if (key.rfind("sub_pick:", 0) == 0) {
-      addSubLocked(subFor_, std::string(key.substr(9)));
-      return true;
+    if (key == "substitute") {
+      const size_t gt = value.find('>');
+      if (gt != std::string_view::npos) addSubLocked(std::string(value.substr(0, gt)), std::string(value.substr(gt + 1)));
     } else if (key == "sub_held") {
+      if (!easyPlaceOk_) {
+        panel_.toast("Use held block needs Easy Place's hooks, which did not load");
+        return true;
+      }
       panel_.toast("Tap any block while holding the replacement");
-      easyplace::captureHeldOnce([this, from = subFor_](const std::string &item) {
+      easyplace::captureHeldOnce([this, from = std::string(value)](const std::string &item) {
         std::lock_guard lock(mu_);
+        ctx_->logger().info("BE-Matica: held block for {}: '{}'", from, item);
         if (item.empty()) return panel_.toast("Your hand was empty: nothing substituted");
         addSubLocked(from, item);
       });
     } else if (key == "sub_undo") {
       for (auto it = subs_.rbegin(); it != subs_.rend(); ++it)
-        if (it->second == subFor_) {
+        if (it->second == value) {
+          ctx_->logger().info("BE-Matica: undo substitute {} -> {}", it->first, it->second);
           subs_.erase(std::next(it).base());
           break;
         }
-      subFor_.clear();
       resubLocked();
-      return true;
-    } else if (key == "sub_reset") {
-      subs_.clear();
-      subFor_.clear();
-      resubLocked();
-      return true;
-    } else if (key == "sub_cancel") {
-      subFor_.clear();
     } else {
       return false;
     }
-    publishLocked();
     return true;
-  }
-
-  void addSubstituteNodesLocked(mm::ConfigSchemaBuilder &schema) {
-    using N = mm::ConfigNodeV2;
-    using T = mm::ConfigControlTypeV2;
-    size_t count = 0;
-    for (const auto &m : materials_)
-      if (m.name == subFor_) count = m.count;
-    schema.node(N{.id = "sub_title", .category = "materials",
-                  .title = "Substitute " + subFor_ + " (" + std::to_string(count) + " blocks) with:",
-                  .description = "Every " + subFor_ + " in the structure becomes the block you pick. The file is not changed.",
-                  .section = "Substitute", .type = T::Info});
-    schema.node(N{.id = "sub_search", .key = "sub_search", .category = "materials", .title = "Search blocks",
-                  .section = "Substitute", .type = T::Text, .currentValue = subSearch_, .hasCurrentValue = true,
-                  .placeholder = "e.g. cobble", .maxLength = 40});
-    schema.node(N{.id = "sub_find", .key = "sub_find", .category = "materials", .title = "Search",
-                  .section = "Substitute", .type = T::Button});
-    if (easyPlaceOk_)
-      schema.node(N{.id = "sub_held", .key = "sub_held", .category = "materials", .title = "Use held block",
-                    .description = "Then tap any block in the world while holding the replacement. Nothing is placed.",
-                    .section = "Substitute", .type = T::Button});
-    if (!wasLocked(subFor_).empty())
-      schema.node(N{.id = "sub_undo", .key = "sub_undo", .category = "materials", .title = "Undo substitution",
-                    .description = "Back to " + wasLocked(subFor_) + ".", .section = "Substitute", .type = T::Button});
-    schema.node(N{.id = "sub_cancel", .key = "sub_cancel", .category = "materials", .title = "Cancel",
-                  .section = "Substitute", .type = T::Button});
-    std::string needle = subSearch_;
-    for (auto &c : needle) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    std::replace(needle.begin(), needle.end(), ' ', '_');
-    if (needle.empty()) return;
-    constexpr size_t kMaxResults = 30;
-    size_t shown = 0;
-    for (const auto &b : BlockMap::bedrockBlocks()) {
-      const std::string name = b.name.substr(b.name.rfind(':') + 1);
-      if (name.find(needle) == std::string::npos || name == "air" || name == "structure_void" || name == subFor_) continue;
-      if (++shown > kMaxResults) break;
-      schema.node(N{.id = "sub_pick:" + name, .key = "sub_pick:" + name, .category = "materials", .title = name,
-                    .section = "Results", .type = T::Button});
-    }
-    if (shown == 0)
-      schema.node(N{.id = "sub_none", .category = "materials", .title = "No block matches \"" + subSearch_ + "\"",
-                    .section = "Results", .type = T::Info});
-    else if (shown > kMaxResults)
-      schema.node(N{.id = "sub_more", .category = "materials", .title = "More blocks match: type more of the name",
-                    .section = "Results", .type = T::Info});
   }
 
   // Rebuilds the settings page (the file list and material list change at runtime) and the overlay.
@@ -747,19 +695,12 @@ private:
                     .section = "Materials", .type = T::Info});
       // One row per block: the launcher caps a single description at 1024 characters, and it stays under
       // its 512-node limit with room for the controls above.
-      if (!subFor_.empty()) addSubstituteNodesLocked(schema);
-      if (!subs_.empty())
-        schema.node(N{.id = "sub_reset", .key = "sub_reset", .category = "materials", .title = "Undo all substitutions",
-                      .section = "Materials", .type = T::Button});
-      // Room is left for the Substitute section's controls and results.
-      const size_t maxRows = subFor_.empty() ? 400 : 340;
-      for (size_t k = 0; k < materials_.size() && k < maxRows; ++k) {
-        const std::string was = wasLocked(materials_[k].name);
-        schema.node(N{.id = "m" + std::to_string(k), .key = "sub_open:" + materials_[k].name, .category = "materials",
-                      .title = std::to_string(materials_[k].count) + "   " + materials_[k].name + "   \u22EF",
-                      .description = was.empty() ? "Tap to substitute" : "Substituted for " + was,
-                      .section = "Materials", .type = T::Button});
-      }
+      constexpr size_t kMaxRows = 400;
+      for (size_t k = 0; k < materials_.size() && k < kMaxRows; ++k)
+        schema.node(N{.id = "m" + std::to_string(k), .category = "materials",
+                      .title = std::to_string(materials_[k].count) + "   " + materials_[k].name,
+                      .description = materials_[k].was.empty() ? "" : "Substituted for " + materials_[k].was,
+                      .section = "Materials", .type = T::Info});
     }
 
     addSettingsNodesLocked(schema);
@@ -893,8 +834,7 @@ private:
   Structure original_;  // the structure as read from its file
   Structure loaded_;    // original_ with the substitutions applied: what the hologram and Easy Place use
   std::vector<std::pair<std::string, std::string>> subs_;  // block -> replacement, without "minecraft:", in order
-  std::string subFor_, subSearch_;
-  std::vector<std::string> originalNames_;  // block names in original_, for "Substituted for ..."  // the Materials row being substituted and the search text
+  std::vector<std::string> originalNames_;  // block names in original_, for "Substituted for ..."
   std::string loadedName_;
   std::vector<Material> materials_;
 };

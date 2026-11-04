@@ -17,6 +17,7 @@ bool loadStructureFile(const std::filesystem::path &file, Structure &out, std::s
 struct Material {
   std::string name;  // without the "minecraft:" prefix
   size_t count = 0;
+  std::string was;  // the structure's own blocks this one replaces (substitution), comma separated
 };
 
 // Blocks needed to build the structure, most-used first. Air and structure voids are left out.

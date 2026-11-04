@@ -1,9 +1,12 @@
 #include <cstring>
 #include "materials_panel.hpp"
 
+#include "blockmap.hpp"
+
 #include <pl/ModMenu.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <thread>
 #include <cmath>
@@ -35,6 +38,63 @@ void MaterialsPanel::init(std::string moduleId, std::string modId,
   modId_ = std::move(modId);
   control_ = std::move(control);
   pl::input::registerTouchCallback([this](const pl::input::TouchEvent &e) { return onTouch(e); });
+  pl::input::registerTextInputCallback([this](const pl::input::TextInputEvent &e) { return onText(e); });
+  pl::input::registerKeyCallback([this](const pl::input::KeyEvent &e) { return onKey(e); });
+}
+
+void MaterialsPanel::searchLocked() {
+  results_.clear();
+  std::string needle;
+  for (unsigned char c : search_) needle += c == ' ' ? '_' : static_cast<char>(std::tolower(c));
+  if (needle.empty()) return;
+  for (const auto &b : BlockMap::bedrockBlocks()) {
+    std::string name = b.name.substr(b.name.rfind(':') + 1);
+    if (name.find(needle) == std::string::npos || name == "air" || name == "structure_void" || name == subFor_) continue;
+    results_.push_back(std::move(name));
+  }
+  // Names starting with the search come first: "stone" before "cobblestone".
+  std::stable_partition(results_.begin(), results_.end(), [&](const std::string &n) { return n.rfind(needle, 0) == 0; });
+}
+
+void MaterialsPanel::closeSubLocked() {
+  if (typing_) pl::input::hideKeyboard();
+  typing_ = false;
+  subFor_.clear();
+  search_.clear();
+  results_.clear();
+  scroll_ = 0;
+}
+
+bool MaterialsPanel::onText(const pl::input::TextInputEvent &e) {
+  std::lock_guard lock(mu_);
+  if (!typing_) return false;
+  search_ += e.text;
+  searchLocked();
+  scroll_ = 0;
+  redrawLocked();
+  return true;
+}
+
+// Android key codes: DEL (backspace) 67, ENTER 66, BACK 4. A hardware keyboard (scrcpy) types through here too.
+bool MaterialsPanel::onKey(const pl::input::KeyEvent &e) {
+  std::lock_guard lock(mu_);
+  if (!typing_) return false;
+  if (!e.isKeyDown) return true;
+  if (e.keyCode == 67) {
+    while (!search_.empty() && (static_cast<unsigned char>(search_.back()) & 0xC0) == 0x80) search_.pop_back();
+    if (!search_.empty()) search_.pop_back();
+  } else if (e.keyCode == 66 || e.keyCode == 4) {
+    typing_ = false;
+    pl::input::hideKeyboard();
+  } else if (e.unicodeChar >= 32 && e.unicodeChar < 127) {
+    search_ += static_cast<char>(e.unicodeChar);
+  } else {
+    return true;
+  }
+  searchLocked();
+  scroll_ = 0;
+  redrawLocked();
+  return true;
 }
 
 void MaterialsPanel::shutdown() {
@@ -48,7 +108,7 @@ void MaterialsPanel::setContent(std::string title, std::vector<Material> materia
   title_ = std::move(title);
   materials_ = std::move(materials);
   done_.clear();
-  scroll_ = 0;
+  closeSubLocked();
   redrawLocked();
 }
 
@@ -143,12 +203,36 @@ bool MaterialsPanel::onTouch(const pl::input::TouchEvent &e) {
       redrawLocked();
       return true;
     }
+    if (key == "_sub") {  // a row's ⋯
+      subFor_ = value;
+      search_.clear();
+      results_.clear();
+      scroll_ = 0;
+      typing_ = true;
+      pl::input::showKeyboard();
+      redrawLocked();
+      return true;
+    }
+    if (key == "_search") {
+      typing_ = true;
+      pl::input::showKeyboard();
+      redrawLocked();
+      return true;
+    }
+    if (key == "_pick" || key == "_held" || key == "_undo" || key == "_back") {
+      const std::string from = subFor_;
+      closeSubLocked();
+      redrawLocked();
+      if (key == "_back") return true;
+      value = key == "_pick" ? from + ">" + value : from;
+      key = key == "_pick" ? "substitute" : key == "_held" ? "sub_held" : "sub_undo";
+    }
     if (key == "_collapse") {
       collapsed_ = !collapsed_;
       redrawLocked();
       return true;
     }
-    if (key.empty() && tab_ == Tab::Blocks && e.y > listTop_ && e.y < listBottom_) {
+    if (key.empty() && tab_ == Tab::Blocks && subFor_.empty() && e.y > listTop_ && e.y < listBottom_) {
       const auto idx = static_cast<size_t>((e.y - listTop_ + scroll_) / row_);
       if (idx < materials_.size()) {
         const auto &name = materials_[idx].name;
@@ -336,6 +420,50 @@ void MaterialsPanel::redrawLocked() {
         button(x_ + pad, yy, half, ctrlH, "Hologram", "hologram", hologram_ ? "0" : "1", hologram_);
         button(x_ + pad * 2 + half, yy, half, ctrlH, "Easy Place", "easyplace", easyPlace_ ? "0" : "1", easyPlace_);
         yy += ctrlH + pad * 2;
+      } else if (!subFor_.empty()) {
+        // Substitute view: what is replaced, the search box, matching blocks, then Held block / Undo / Back.
+        size_t count = 0;
+        bool substituted = false;
+        for (const auto &m : materials_)
+          if (m.name == subFor_) count = m.count, substituted = !m.was.empty();
+        text(cmds, x_ + pad * 2, yy + (row_ - font) / 2, font, kDim, "Replace " + subFor_ + "  (" + countText(count) + ")");
+        yy += row_ + pad;
+        const float boxX = x_ + pad, boxW = w_ - pad * 2;
+        card(cmds, boxX, yy, boxW, ctrlH, radius, edge, kWell, typing_ ? kAccent : kBorder);
+        controls_.push_back({boxX, yy, boxW, ctrlH, "_search", ""});
+        const std::string shown = search_.empty() && !typing_ ? "Search blocks..." : search_ + (typing_ ? "|" : "");
+        text(cmds, boxX + font * 0.6f, yy + (ctrlH - font) / 2, font, search_.empty() && !typing_ ? kDim : kText, shown);
+        yy += ctrlH + pad;
+        listTop_ = yy;
+        listBottom_ = listTop_ + row_ * 5;
+        const float wellX = x_ + pad, wellW = w_ - pad * 2;
+        roundRect(cmds, wellX, listTop_, wellW, listBottom_ - listTop_, radius, kWell);
+        if (results_.empty()) {
+          text(cmds, wellX + font * 0.5f, listTop_ + (row_ - font) / 2, font, kDim,
+               search_.empty() ? "Type a block name" : "No block matches");
+        }
+        const float contentH = row_ * results_.size();
+        const float maxScroll = std::max(0.0f, contentH - (listBottom_ - listTop_));
+        scroll_ = std::clamp(scroll_, 0.0f, maxScroll);
+        for (size_t k = static_cast<size_t>(scroll_ / row_); k < results_.size(); ++k) {
+          const float ry = listTop_ + k * row_ - scroll_;
+          if (ry + row_ > listBottom_) break;
+          if (k % 2) rect(cmds, wellX, ry, wellW, row_, kStripe);
+          text(cmds, wellX + font * 0.5f, ry + (row_ - font) / 2, font, kText, results_[k]);
+          controls_.push_back({wellX, ry, wellW, row_, "_pick", results_[k].c_str()});
+        }
+        yy = listBottom_ + pad;
+        const int n = substituted ? 3 : 2;
+        const float bw = (w_ - pad * (n + 1)) / n;
+        float bx = x_ + pad;
+        button(bx, yy, bw, ctrlH, "Held block", "_held", "", false);
+        bx += bw + pad;
+        if (substituted) {
+          button(bx, yy, bw, ctrlH, "Undo", "_undo", "", false);
+          bx += bw + pad;
+        }
+        button(bx, yy, bw, ctrlH, "Back", "_back", "", false);
+        yy += ctrlH + pad;
       } else {
         const std::string title = title_.empty() ? "No structure loaded"
                                                  : title_ + "   " + std::to_string(done_.size()) + "/" +
@@ -350,16 +478,23 @@ void MaterialsPanel::redrawLocked() {
         const float contentH = row_ * materials_.size();
         const float maxScroll = std::max(0.0f, contentH - (listBottom_ - listTop_));
         scroll_ = std::clamp(scroll_, 0.0f, maxScroll);
+        const float dotsW = row_ * 1.4f;  // the row's ⋯ button, at its right end
         for (size_t k = static_cast<size_t>(scroll_ / row_); k < materials_.size(); ++k) {
           const float ry = listTop_ + k * row_ - scroll_;
           if (ry + row_ > listBottom_) break;
           const bool done = done_.count(materials_[k].name) > 0;
           if (k % 2) rect(cmds, wellX, ry, wellW, row_, kStripe);
           const uint32_t color = done ? kAccent : kText;
+          // A substituted block is marked with *; its ⋯ view offers Undo.
           text(cmds, wellX + font * 0.5f, ry + (row_ - font) / 2, font, color,
-               (done ? "\xE2\x9C\x93 " : "") + materials_[k].name);
-          text(cmds, x_ + w_ * 0.62f, ry + (row_ - font) / 2, font, done ? kAccent : kDim,
+               (done ? "\xE2\x9C\x93 " : "") + materials_[k].name + (materials_[k].was.empty() ? "" : " *"));
+          text(cmds, x_ + w_ * 0.58f, ry + (row_ - font) / 2, font, done ? kAccent : kDim,
                countText(materials_[k].count));
+          const float dx = wellX + wellW - dotsW - font * 0.5f;
+          for (int d = -1; d <= 1; ++d)
+            rect(cmds, dx + dotsW / 2 + d * font * 0.32f - font * 0.07f, ry + row_ / 2 - font * 0.07f, font * 0.14f,
+                 font * 0.14f, kDim);
+          controls_.push_back({dx, ry, dotsW + font * 0.5f, row_, "_sub", materials_[k].name.c_str()});
         }
         if (maxScroll > 0) {
           const float trackH = listBottom_ - listTop_, barH = std::max(row_, trackH * trackH / contentH);

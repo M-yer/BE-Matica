@@ -15,11 +15,13 @@ namespace bematica {
 // Floating control panel, on screen while the Controls module is on. The header shows build progress,
 // switches between the Move and Blocks tabs, collapses the panel and drags it around. Move holds the nudge,
 // rotate, mirror and layer controls plus the hologram / Easy Place toggles; Blocks holds the material
-// list, which scrolls by dragging, and tapping a row ticks it off.
+// list, which scrolls by dragging, and tapping a row ticks it off. A row's ⋯ opens the Substitute view: search
+// the block list with the keyboard, take the held block, or undo.
 class MaterialsPanel {
 public:
   // `control` receives the same keys as the settings page: forward, back, left, right, up, down, rotate, mirror,
-  // layer_down, layer_up, layers, hologram, easyplace, lock.
+  // layer_down, layer_up, layers, hologram, easyplace, lock; and from the Substitute view "substitute" (value
+  // "from>to"), "sub_held" (value: from) and "sub_undo" (value: the substituted block).
   void init(std::string moduleId, std::string modId,
             std::function<void(std::string_view key, std::string_view value)> control);
   void shutdown();
@@ -34,6 +36,10 @@ public:
 
 private:
   bool onTouch(const pl::input::TouchEvent &e);
+  bool onText(const pl::input::TextInputEvent &e);
+  bool onKey(const pl::input::KeyEvent &e);
+  void searchLocked();
+  void closeSubLocked();
   void redrawLocked();
   bool insideLocked(float x, float y) const;
 
@@ -55,6 +61,9 @@ private:
   std::string title_;
   std::vector<Material> materials_;
   std::set<std::string> done_;
+  std::string subFor_, search_;       // the block being substituted (empty: list view) and the search text
+  bool typing_ = false;               // the search box has the keyboard
+  std::vector<std::string> results_;  // block names matching search_
   bool visible_ = false;
 
   // Layout, recomputed on every redraw from the HUD surface size. px_/py_ is where the panel was dragged
