@@ -403,6 +403,12 @@ private:
          "pair moves it up and down, Rotate +90\u00B0 turns it, Mirror flips it, "
          "< and > pick a single layer, All shows every layer.\nBlocks tab: every block the structure needs; tap a "
          "row to tick it off."},
+        {"Substitute a block",
+         "Use another block where the type doesn't matter, e.g. cobblestone for 500 smooth stone.\n"
+         "In the panel's Blocks tab, tap \u22EF on a row. Type part of a name and tap a result, or tap Held block and "
+         "then tap any block while holding the replacement (that tap places nothing).\nEvery block of that type is "
+         "replaced: hologram, Easy Place and counts follow. Substituted rows show *; tap \u22EF again for Undo. "
+         "The structure file is not changed. Substitutions stay until you load another structure."},
         {"Lock and saved placement",
          "The structure, its position, rotation, mirror and layer view are saved whenever they change, and come "
          "back when you restart the game or rejoin.\nThe padlock in the panel header locks the placement: moving, "
