@@ -2,6 +2,7 @@
 // Block names are Bedrock ones ("minecraft:reeds"); an unlisted block returns "" and is picked by its block type.
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 
@@ -67,6 +68,31 @@ inline std::string itemFor(std::string_view block) {
   constexpr std::string_view door = "_door";
   if (name.size() > door.size() && name.substr(name.size() - door.size()) == door) return std::string(block);
   return {};
+}
+
+// How many of the item for `block` fit in one inventory slot (with or without "minecraft:").
+inline int stackSize(std::string_view block) {
+  constexpr std::string_view ns = "minecraft:";
+  if (block.substr(0, ns.size()) == ns) block.remove_prefix(ns.size());
+  const auto endsWith = [&](std::string_view tail) {
+    return block.size() >= tail.size() && block.substr(block.size() - tail.size()) == tail;
+  };
+  // Liquids and powder snow are placed from filled buckets.
+  if (block == "bed" || block == "cake" || endsWith("shulker_box") || block == "water" || block == "flowing_water" ||
+      block == "lava" || block == "flowing_lava" || block == "powder_snow")
+    return 1;
+  if (endsWith("sign") || endsWith("banner")) return 16;
+  return 64;
+}
+
+// `count` items as full shulker boxes (27 slots), then full stacks, then the rest. Unstackable items have no stacks.
+struct Breakdown {
+  size_t shulkers = 0, stacks = 0, rest = 0;
+};
+inline Breakdown breakdown(size_t count, int stack) {
+  const size_t box = 27 * static_cast<size_t>(stack);
+  if (stack == 1) return {count / box, 0, count % box};
+  return {count / box, count % box / stack, count % stack};
 }
 
 }  // namespace bematica::itemmap

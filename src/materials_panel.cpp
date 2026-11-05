@@ -3,6 +3,7 @@
 
 #include "blockmap.hpp"
 #include "icons.hpp"
+#include "itemmap.hpp"
 
 #include <pl/ModMenu.hpp>
 
@@ -275,6 +276,7 @@ namespace {
 // whatever is on or selected (green text on a dark green fill).
 constexpr uint32_t kPanel = 0xFF18191C, kBorder = 0xFF343A40, kButton = 0xFF24282C, kActiveFill = 0xFF25463B;
 constexpr uint32_t kAccent = 0xFF4AE0A0, kWell = 0xFF151719, kStripe = 0x0AFFFFFF, kText = 0xFFE9ECEF, kDim = 0xFF8D949B;
+constexpr uint32_t kShulker = 0xFFB18BC8;  // shulker-box purple
 
 void rect(std::vector<mm::DrawCommand> &cmds, float x, float y, float w, float h, uint32_t color) {
   cmds.push_back({.type = mm::DrawCommandType::RectFilled, .x = x, .y = y, .w = w, .h = h, .color = color});
@@ -484,9 +486,23 @@ void MaterialsPanel::redrawLocked() {
           const bool done = done_.count(materials_[k].name) > 0;
           if (k % 2) rect(cmds, wellX, ry, wellW, row_, kStripe);
           const uint32_t color = done ? kAccent : kText;
-          const std::string count = countText(materials_[k].count);
-          const float countX = dotsX - textWidth(count, font);
-          text(cmds, countX, ry + (row_ - font) / 2, font, done ? kAccent : kDim, count);
+          // "5134 = 2 [shulker] + 26s + 14": full shulker boxes, full stacks, then loose blocks.
+          const size_t n = materials_[k].count;
+          const int stack = itemmap::stackSize(materials_[k].name);
+          const itemmap::Breakdown b = itemmap::breakdown(n, stack);
+          std::string head = std::to_string(n), tail;
+          if ((stack > 1 && n >= static_cast<size_t>(stack)) || b.shulkers) {
+            head += " = ";
+            if (b.shulkers) head += std::to_string(b.shulkers);
+            if (b.stacks) tail += (b.shulkers ? " + " : "") + std::to_string(b.stacks) + "s";
+            if (b.rest) tail += (b.shulkers || b.stacks ? " + " : "") + std::to_string(b.rest);
+          }
+          const float boxW = b.shulkers ? font * 1.2f : 0;
+          const float countX = dotsX - textWidth(head, font) - boxW - textWidth(tail, font);
+          const uint32_t countColor = done ? kAccent : kDim;
+          text(cmds, countX, ry + (row_ - font) / 2, font, countColor, head);
+          if (b.shulkers) icon(cmds, Icon::Box, countX + textWidth(head, font), ry + (row_ - boxW) / 2, boxW, kShulker);
+          text(cmds, countX + textWidth(head, font) + boxW, ry + (row_ - font) / 2, font, countColor, tail);
           // A substituted block is marked with *; its ⋯ view offers Undo.
           const float nameX = wellX + font * 0.5f;
           text(cmds, nameX, ry + (row_ - font) / 2, font, color,

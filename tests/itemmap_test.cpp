@@ -4,7 +4,9 @@
 #include <cstdio>
 #include <string>
 
+using bematica::itemmap::breakdown;
 using bematica::itemmap::itemFor;
+using bematica::itemmap::stackSize;
 
 namespace {
 int failures = 0;
@@ -33,6 +35,23 @@ int main() {
   CHECK(itemFor("minecraft:redstone_wire") == "minecraft:redstone");
   CHECK(itemFor("minecraft:carrots") == "minecraft:carrot");
   CHECK(itemFor("minecraft:stone").empty());
+  CHECK(stackSize("stone") == 64);
+  CHECK(stackSize("minecraft:stripped_spruce_wood") == 64);
+  CHECK(stackSize("oak_hanging_sign") == 16);
+  CHECK(stackSize("standing_banner") == 16);
+  CHECK(stackSize("bed") == 1);
+  CHECK(stackSize("red_shulker_box") == 1);
+  CHECK(stackSize("water") == 1);
+  {
+    const auto b = breakdown(5134, 64);  // the Discord example: 2 shulkers + 26 stacks + 14
+    CHECK(b.shulkers == 2 && b.stacks == 26 && b.rest == 14);
+    const auto s = breakdown(100, 16);
+    CHECK(s.shulkers == 0 && s.stacks == 6 && s.rest == 4);
+    const auto u = breakdown(30, 1);
+    CHECK(u.shulkers == 1 && u.stacks == 0 && u.rest == 3);
+    const auto z = breakdown(14, 64);
+    CHECK(z.shulkers == 0 && z.stacks == 0 && z.rest == 14);
+  }
   CHECK(itemFor("minecraft:oak_planks").empty());
   CHECK(itemFor("minecraft:spruce_sign").empty());
   CHECK(itemFor("minecraft:spruce_wall_sign") == "minecraft:spruce_sign");
