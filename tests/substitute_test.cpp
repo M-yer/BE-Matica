@@ -48,7 +48,7 @@ int main() {
 
   const auto m = countMaterials(s);
   CHECK(m.size() == 2 && m[0].name == "cobblestone" && m[0].count == 2);
-  // Redstone saved while powered loads as the form the item places (Charlie's orbital cannon: repeaters and comparators).
+  // Redstone saved while powered loads as the form the item places (a cannon saved with its circuit running).
   Structure r;
   nbt::Tag comp = nbt::makeCompound();
   nbt::put(comp, "minecraft:cardinal_direction", nbt::makeString("west"));
