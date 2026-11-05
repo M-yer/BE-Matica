@@ -1159,7 +1159,8 @@ bool buildFacing(const Context &ctx, const Cell &cell, FacingJob &out) {
   for (size_t i = 0; i < bs.states.items.size() && i < bs.states.keys.size(); ++i) {
     const nbt::Tag &t = bs.states.items[i];
     const std::string &key = bs.states.keys[i];
-    if (!orient::isDirectionKey(key)) continue;
+    // The comparator's mode is chosen with its facing: a block entity is never setBlock'd afterwards.
+    if (!orient::isDirectionKey(key) && key != "output_subtract_bit") continue;
     orient::StateValue v{static_cast<int>(t.i), t.s, t.type == nbt::Type::String};
     if (!v.isText && t.type != nbt::Type::Byte && t.type != nbt::Type::Short && t.type != nbt::Type::Int) continue;
     orient::transformState(bs.name, key, v, ctx.h.view.rotation, ctx.h.view.mirror);

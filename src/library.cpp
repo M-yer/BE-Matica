@@ -1,4 +1,5 @@
 #include "library.hpp"
+#include "itemmap.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -75,6 +76,16 @@ void substituteBlock(Structure &s, const std::string &from, const BlockState &to
       if (const nbt::Tag *old = entry.states.get(next.states.keys[k], next.states.items[k].type))
         next.states.items[k] = *old;
     entry = std::move(next);
+  }
+}
+
+void unpowerBlocks(Structure &s) {
+  for (auto &entry : s.palette) {
+    const std::string placed = itemmap::placedForm(entry.name);
+    if (placed == entry.name) continue;
+    entry.name = placed;
+    for (size_t k = 0; k < entry.states.keys.size(); ++k)
+      if (entry.states.keys[k] == "output_lit_bit") entry.states.items[k].i = 0;
   }
 }
 

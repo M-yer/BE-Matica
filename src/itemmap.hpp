@@ -7,6 +7,28 @@
 
 namespace bematica::itemmap {
 
+// Redstone parts saved while powered or unlit: the item always places the other form, and the circuit switches between
+// the two by itself. Names without "minecraft:".
+struct PoweredForm {
+  std::string_view saved, placed;
+};
+inline constexpr PoweredForm kPoweredForms[] = {
+    {"powered_repeater", "unpowered_repeater"},
+    {"powered_comparator", "unpowered_comparator"},
+    {"unlit_redstone_torch", "redstone_torch"},
+    {"lit_redstone_lamp", "redstone_lamp"},
+};
+
+// The block the item places for `block` (with or without "minecraft:"), or `block` itself.
+inline std::string placedForm(std::string_view block) {
+  constexpr std::string_view ns = "minecraft:";
+  const bool prefixed = block.substr(0, ns.size()) == ns;
+  const std::string_view name = prefixed ? block.substr(ns.size()) : block;
+  for (const PoweredForm &f : kPoweredForms)
+    if (name == f.saved) return (prefixed ? std::string(ns) : std::string()) + std::string(f.placed);
+  return std::string(block);
+}
+
 inline std::string itemFor(std::string_view block) {
   constexpr std::string_view ns = "minecraft:";
   if (block.substr(0, ns.size()) != ns) return {};

@@ -48,6 +48,25 @@ int main() {
 
   const auto m = countMaterials(s);
   CHECK(m.size() == 2 && m[0].name == "cobblestone" && m[0].count == 2);
+  // Redstone saved while powered loads as the form the item places (Charlie's orbital cannon: repeaters and comparators).
+  Structure r;
+  nbt::Tag comp = nbt::makeCompound();
+  nbt::put(comp, "minecraft:cardinal_direction", nbt::makeString("west"));
+  nbt::put(comp, "output_lit_bit", nbt::makeInt(nbt::Type::Byte, 1));
+  nbt::put(comp, "output_subtract_bit", nbt::makeInt(nbt::Type::Byte, 1));
+  r.palette = {{"minecraft:powered_comparator", comp, 1},
+               {"minecraft:powered_repeater", nbt::makeCompound(), 1},
+               {"minecraft:unlit_redstone_torch", nbt::makeCompound(), 1},
+               {"minecraft:unpowered_repeater", nbt::makeCompound(), 1}};
+  unpowerBlocks(r);
+  CHECK(r.palette[0].name == "minecraft:unpowered_comparator");
+  CHECK(r.palette[0].states.get("output_lit_bit")->i == 0);
+  CHECK(r.palette[0].states.get("output_subtract_bit")->i == 1);
+  CHECK(r.palette[0].states.get("minecraft:cardinal_direction")->s == "west");
+  CHECK(r.palette[1].name == "minecraft:unpowered_repeater");
+  CHECK(r.palette[2].name == "minecraft:redstone_torch");
+  CHECK(r.palette[3].name == "minecraft:unpowered_repeater");
+
   if (failures) return 1;
   std::printf("substitute_test: ok (%zu Bedrock blocks)\n", blocks.size());
 }

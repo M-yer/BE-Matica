@@ -27,4 +27,8 @@ std::vector<Material> countMaterials(const Structure &s);
 // so stairs stay turned the same way; the others come from `to`.
 void substituteBlock(Structure &s, const std::string &from, const BlockState &to);
 
+// Powered repeaters, comparators, unlit torches and lit lamps become the form their item places (see itemmap::placedForm),
+// so they count, match the held item and get oriented like the rest. The comparator's lit bit is cleared with it.
+void unpowerBlocks(Structure &s);
+
 }  // namespace bematica

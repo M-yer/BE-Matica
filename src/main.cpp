@@ -520,6 +520,7 @@ private:
   void showLocked(const std::string &name, Structure &&s, const View *view = nullptr,
                   const std::array<int, 3> *origin = nullptr) {
     original_ = std::move(s);
+    unpowerBlocks(original_);
     loadedName_ = name;
     // Substitutions belong to one placement: only a restored placement (`view` given) keeps them.
     if (!view) subs_.clear();

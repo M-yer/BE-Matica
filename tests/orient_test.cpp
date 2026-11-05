@@ -177,6 +177,7 @@ int main() {
   // yaw-driven block entities: which placement hook covers them
   CHECK(orient::placementHook("minecraft:chest") == 1 && orient::placementHook("smoker") == 1);
   CHECK(orient::placementHook("minecraft:barrel") == 2);
+  CHECK(orient::placementHook("minecraft:unpowered_comparator") == 1);
   CHECK(orient::placementHook("dropper") == 4 && orient::placementHook("minecraft:dispenser") == 4);
   CHECK(orient::placementHook("oak_wall_sign") == 0 && orient::placementHook("stone") == 0);
   CHECK(orient::isDirectionKey("cardinal_direction") && orient::isDirectionKey("minecraft:facing_direction"));

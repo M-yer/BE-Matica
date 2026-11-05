@@ -1,6 +1,7 @@
 #include "hologram.hpp"
 
 #include "game.hpp"
+#include "itemmap.hpp"
 #include "mesh.hpp"
 #include "texresolve.hpp"
 #include "textured.hpp"
@@ -256,6 +257,18 @@ uintptr_t typeOf(const std::string &name) {
   return t;
 }
 
+// A world block's type with powered/unlit forms folded onto the form the item places (see itemmap::kPoweredForms): a
+// repeater the circuit has switched on still counts as built. Render thread only.
+uintptr_t familyOf(uintptr_t type) {
+  static std::unordered_map<uintptr_t, uintptr_t> folded;
+  if (folded.empty())
+    for (const auto &f : itemmap::kPoweredForms)
+      if (const uintptr_t saved = typeOf("minecraft:" + std::string(f.saved)))
+        folded.emplace(saved, typeOf("minecraft:" + std::string(f.placed)));
+  const auto it = folded.find(type);
+  return it != folded.end() ? it->second : type;
+}
+
 // Ghost blocks the world already has right (same block type) are dropped from the hologram; checked twice a second
 // on the render thread through the level renderer's BlockSource.
 void refreshPlaced(const char *levelRenderer, const Structure &s) {
@@ -279,7 +292,7 @@ void refreshPlaced(const char *levelRenderer, const Structure &s) {
     const void *block = gGetBlock(source, pos);
     const void *type = nullptr;
     const bool ok = block && safeRead(static_cast<const char *>(block) + off::Block_blockType, &type, 8) && type &&
-                    (reinterpret_cast<uintptr_t>(type) & 0x00FFFFFFFFFFFFFFULL) == typeOf(s.palette[palette].name);
+                    familyOf(reinterpret_cast<uintptr_t>(type) & 0x00FFFFFFFFFFFFFFULL) == typeOf(s.palette[palette].name);
     if (!ok && !full && gLog)  // placements are rare, so each miss is logged to compare the two types
       gLog->info("Hologram: {} {} {} wants {} ({:#x}), world block {} type {}", x, y, z, s.palette[palette].name,
                  typeOf(s.palette[palette].name), block, type);
@@ -556,7 +569,7 @@ void updateLook(const char *levelRenderer, bool aimed, int32_t hitType, const Bl
       const std::string world = key.type ? blockName(key.type) : std::string();
       const uintptr_t air = typeOf("minecraft:air");
       const bool isAir = world == "minecraft:air" || (air != 0 && key.type == air);
-      const bool wrong = key.type != 0 && !isAir && typeOf(want) != key.type;
+      const bool wrong = key.type != 0 && !isAir && typeOf(want) != familyOf(key.type);
       info.valid = true, info.inside = true, info.name = displayName(want);
       info.note = wrong ? "Wrong block: " + displayName(world) : "Not placed";
       if (gLog) gLog->info("BE-Matica: WAILA ghost '{}' -> {}", want, info.note);
@@ -573,7 +586,7 @@ void updateLook(const char *levelRenderer, bool aimed, int32_t hitType, const Bl
     info.name = id.empty() ? "Unknown block" : displayName(id);
     if (key.palette >= 0) {
       const std::string &want = structure->palette[key.palette].name;
-      info.inside = true, info.match = typeOf(want) == key.type, info.want = displayName(want);
+      info.inside = true, info.match = typeOf(want) == familyOf(key.type), info.want = displayName(want);
     }
   }
   listener(info);

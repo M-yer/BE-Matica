@@ -177,7 +177,7 @@ inline int placementHook(std::string_view block) {
   if (block == "barrel") return 2;
   if (block == "dispenser" || block == "dropper") return 4;
   for (const std::string_view b : {"chest", "trapped_chest", "ender_chest", "furnace", "blast_furnace", "smoker", "lectern",
-                                   "campfire", "soul_campfire"})
+                                   "campfire", "soul_campfire", "unpowered_comparator"})
     if (block == b) return 1;
   return 0;
 }
