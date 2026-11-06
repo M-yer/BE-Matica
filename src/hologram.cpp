@@ -681,7 +681,9 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
     lastWhy = why;
     __android_log_print(ANDROID_LOG_INFO, "BE-Matica", "BE-Matica: Atlas GL path: %s", why);
   }
-  if (!drewTextured && !textured::atlasWanted() && textured::enabled()) {  // old BlockTessellator experiment: only without an atlas
+  // The game's own block models near the camera (BlockTessellator). Also when our GL path cannot draw: on 1.26
+  // (RenderDragon) this hook has no GL context, so the atlas path never draws there.
+  if (!drewTextured && textured::enabled()) {
     std::shared_ptr<const Structure> structure;
     {
       std::lock_guard lock(gMu);
