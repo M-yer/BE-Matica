@@ -5,6 +5,7 @@
 #include "zipfile.hpp"
 
 #include <android/log.h>
+#include <plutovg.h>
 
 #include <algorithm>
 #include <atomic>
@@ -72,6 +73,72 @@ bool registerOnce(const std::string &id, const Image &img) {
   return true;
 }
 
+// Newer games (1.26+) ship their pixel font only as Mojangles.ttf. It is drawn into a 16x16 sheet of 8x8 cells like
+// default8.png: at 10 px one font pixel is one sheet pixel, glyphs start half a pixel in, baseline on row 7.
+bool fontFromTtf(const std::vector<std::string> &apks, Image &sheet) {
+  std::vector<uint8_t> ttf;
+  for (const std::string &apk : apks) {
+    ZipArchive zip;
+    std::string error;
+    if (!zip.open(apk, error)) continue;
+    for (const auto &kv : zip.entries())
+      if (kv.first.ends_with("fonts/Mojangles.ttf") && zip.read(kv.first, ttf, 8u << 20, error)) break;
+    if (!ttf.empty()) break;
+  }
+  if (ttf.empty()) return false;
+  plutovg_font_face_t *face = plutovg_font_face_load_from_data(ttf.data(), static_cast<unsigned>(ttf.size()), 0, nullptr, nullptr);
+  if (!face) return false;
+  plutovg_surface_t *surface = plutovg_surface_create(128, 128);
+  plutovg_canvas_t *canvas = plutovg_canvas_create(surface);
+  plutovg_canvas_set_font(canvas, face, 10);
+  plutovg_canvas_set_rgba(canvas, 1, 1, 1, 1);
+  for (int code = 33; code < 256; ++code) {
+    const uint32_t cp = code == 0xF8 ? 0xB0 : code < 127 ? code : 0;  // 0xF8 is the degree sign, as in the ascii sheets
+    if (!cp) continue;
+    plutovg_canvas_fill_text(canvas, &cp, 1, PLUTOVG_TEXT_ENCODING_UTF32, (code % 16) * 8 - 0.5f, (code / 16) * 8 + 7);
+  }
+  // plutovg's pixels are premultiplied BGRA; the sheet wants white with hard alpha.
+  sheet.w = sheet.h = 128;
+  sheet.rgba.assign(128 * 128 * 4, 0);
+  const uint8_t *px = plutovg_surface_get_data(surface);
+  const int stride = plutovg_surface_get_stride(surface);
+  for (int y = 0; y < 128; ++y)
+    for (int x = 0; x < 128; ++x)
+      if (px[y * stride + x * 4 + 3] >= 128) std::fill_n(&sheet.rgba[(y * 128 + x) * 4], 4, uint8_t{255});
+  plutovg_canvas_destroy(canvas);
+  plutovg_surface_destroy(surface);
+  plutovg_font_face_destroy(face);
+  return true;
+}
+
+// Newer games draw their menus in code, so the old UI textures are gone; the same bevelled look is drawn here instead.
+// 8x8 pixels with 3-pixel borders: outline, highlight on the top and left, shadow on the bottom and right.
+void bevel(Texture &t, uint32_t outline, uint32_t light, uint32_t fill, uint32_t dark, int lightW, int darkW) {
+  t.image.w = t.image.h = 8;
+  t.image.rgba.assign(8 * 8 * 4, 0);
+  for (int y = 0; y < 8; ++y)
+    for (int x = 0; x < 8; ++x) {
+      const bool edge = x == 0 || y == 0 || x == 7 || y == 7, corner = (x == 0 || x == 7) && (y == 0 || y == 7);
+      if (corner) continue;
+      const uint32_t c = edge                                    ? outline
+                         : x >= 7 - darkW || y >= 7 - darkW      ? dark
+                         : x <= lightW || y <= lightW            ? light
+                                                                 : fill;
+      uint8_t *p = &t.image.rgba[(y * 8 + x) * 4];
+      p[0] = c >> 16 & 0xFF, p[1] = c >> 8 & 0xFF, p[2] = c & 0xFF, p[3] = 0xFF;
+    }
+  t.slice = {3, 3, 3, 3};
+}
+
+void drawnTexture(int box, Texture &t) {
+  switch (static_cast<Box>(box)) {
+    case Box::Panel: return bevel(t, 0x000000, 0xFFFFFF, 0xC6C6C6, 0x555555, 2, 2);
+    case Box::Button: return bevel(t, 0x000000, 0x5A5A5A, 0x3A3A3A, 0x1E1E1E, 1, 2);
+    case Box::ButtonOn: return bevel(t, 0x000000, 0x6CC349, 0x3C8527, 0x1D4D13, 1, 2);
+    case Box::Well: return bevel(t, 0x1E1E1E, 0x2E2E2E, 0x585858, 0x7A7A7A, 1, 1);
+  }
+}
+
 }  // namespace
 
 void load() {
@@ -80,22 +147,27 @@ void load() {
   ResourcePack pack;
   std::string error;
   const std::vector<std::string> apks = gameArchiveCandidates();
-  if (!pack.open(apks, error)) {
-    info("BE-Matica: Skin unavailable: %s", error.c_str());
-    return;
-  }
+  const bool havePack = pack.open(apks, error);
   bool font = false;
   for (const char *path : kFonts) {
     Image sheet;
-    if (readImage(pack, path, sheet) && buildFont(std::move(sheet), gFont)) {
+    if (havePack && readImage(pack, path, sheet) && buildFont(std::move(sheet), gFont)) {
       info("BE-Matica: Skin font %s", path);
       font = true;
       break;
     }
   }
-  if (!font) info("BE-Matica: Skin unavailable: %s", "no font sheet");
-  bool all = font;
-  for (Texture &t : gTextures) all = loadTexture(pack, t) && all;
+  if (Image sheet; !font && fontFromTtf(apks, sheet) && buildFont(std::move(sheet), gFont)) {
+    info("BE-Matica: Skin font %s", "Mojangles.ttf");
+    font = true;
+  }
+  if (!font) {
+    info("BE-Matica: Skin unavailable: no font (%s)", havePack ? "no font sheet or Mojangles.ttf" : error.c_str());
+    return;
+  }
+  const bool all = font;
+  for (int i = 0; i < static_cast<int>(std::size(gTextures)); ++i)
+    if (!havePack || !loadTexture(pack, gTextures[i])) drawnTexture(i, gTextures[i]);
   // The game's pressed green is very saturated next to the grey panel; mute it halfway to grey and darken it a bit.
   for (size_t i = 0; i + 3 < gTextures[static_cast<int>(Box::ButtonOn)].image.rgba.size(); i += 4) {
     uint8_t *p = &gTextures[static_cast<int>(Box::ButtonOn)].image.rgba[i];

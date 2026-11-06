@@ -26,7 +26,7 @@ add_library(BEMatica SHARED src/main.cpp src/nbt.cpp src/mcstructure.cpp src/lib
 # Header-only helpers the preloader SDK already fetches: JSON for the game's texture lists, stb_image for its pictures.
 FetchContent_GetProperties(nlohmann_json)
 FetchContent_GetProperties(lunasvg)
-target_include_directories(BEMatica PRIVATE src "${nlohmann_json_SOURCE_DIR}/include" "${lunasvg_SOURCE_DIR}/plutovg/source")
+target_include_directories(BEMatica PRIVATE src "${nlohmann_json_SOURCE_DIR}/include" "${lunasvg_SOURCE_DIR}/plutovg/source" "${lunasvg_SOURCE_DIR}/plutovg/include")
 find_library(gles-lib GLESv3 REQUIRED)
 target_link_libraries(BEMatica PRIVATE preloader lunasvg::lunasvg log z ${gles-lib})
 target_compile_options(BEMatica PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-O2 -fvisibility=hidden -fvisibility-inlines-hidden -Wall>)

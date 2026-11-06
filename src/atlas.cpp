@@ -306,8 +306,11 @@ bool ResourcePack::open(const std::vector<std::string> &archivePaths, std::strin
       } else {
         continue;
       }
-      if (best.empty() || (isTerrain && !terrain) || (isTerrain == terrain && (preferred(root) > preferred(best) ||
-                                                                              (preferred(root) == preferred(best) && root.size() < best.size()))))
+      // The vanilla pack wins even without terrain_texture.json in this split: other packs in the game (e.g. chemistry)
+      // carry their own terrain_texture.json but not the game's font and UI textures.
+      const bool p = preferred(root), pb = preferred(best);
+      if (best.empty() || p > pb ||
+          (p == pb && ((isTerrain && !terrain) || (isTerrain == terrain && root.size() < best.size()))))
         best = root, terrain = isTerrain;
     }
     if (best.empty()) continue;

@@ -50,9 +50,10 @@ SRC=(src/materials_panel.cpp src/skin.cpp src/skin_core.cpp src/icons.cpp src/im
      src/texresolve.cpp src/nbt.cpp src/mcstructure.cpp src/library.cpp src/mesh.cpp src/gzip.cpp src/blockmap.cpp
      src/litematic.cpp "$OUT/block_map_data.S")
 "$CXX" -std=c++20 -O1 -g -w -Isrc -Itools/host-stubs -Ivendor/preloader-android/include \
-  -I"$DEPS/nlohmann_json-src/include" -I"$LUNA/include" -isystem "$LUNA/plutovg/source" \
+  -I"$DEPS/nlohmann_json-src/include" -I"$LUNA/include" -isystem "$LUNA/plutovg/source" -isystem "$LUNA/plutovg/include" \
   "${SRC[@]}" tools/panel_preview.cpp "$OUT/obj/liblunasvg.a" -lz -o "$OUT/panel_preview"
 
 rm -f "$OUT"/*.png
-BEMATICA_GAME_APK="$PWD/$OUT/fake_game.apk" "$OUT/panel_preview" "$OUT" skin
+# PREVIEW_APK=<a real game apk> previews with what that game version ships.
+BEMATICA_GAME_APK="${PREVIEW_APK:-$PWD/$OUT/fake_game.apk}" "$OUT/panel_preview" "$OUT" skin
 "$OUT/panel_preview" "$OUT" flat

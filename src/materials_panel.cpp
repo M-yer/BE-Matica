@@ -46,7 +46,11 @@ void MaterialsPanel::init(std::string moduleId, std::string modId,
   pl::input::registerTextInputCallback([this](const pl::input::TextInputEvent &e) { return onText(e); });
   pl::input::registerKeyCallback([this](const pl::input::KeyEvent &e) { return onKey(e); });
   std::thread([this] {  // reads the game's font and textures; the panel keeps its flat look until they are in
-    skin::load();
+    // The mod starts before the game's apk is mapped into the process, so keep looking for a minute.
+    for (int tries = 0; tries < 30 && !skin::available(); ++tries) {
+      if (tries) std::this_thread::sleep_for(std::chrono::seconds(2));
+      skin::load();
+    }
     std::lock_guard lock(mu_);
     redrawLocked();
   }).detach();
