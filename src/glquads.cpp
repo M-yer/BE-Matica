@@ -1,5 +1,6 @@
 #include "glquads.hpp"
 
+#include <EGL/egl.h>
 #include <GLES3/gl3.h>
 
 #include <cmath>
@@ -280,6 +281,13 @@ bool usable(const float m[16]) {
 }  // namespace
 
 void snapshotViewProjections() {
+  static bool contextLogged = false;
+  if (!contextLogged) {  // no context here means the game renders with Vulkan, where none of the GL path can work
+    contextLogged = true;
+    const auto str = [](GLenum e) { const GLubyte *v = glGetString(e); return v ? reinterpret_cast<const char *>(v) : "none"; };
+    info("BE-Matica: Atlas GL hook thread: EGL context %p, GL %s, renderer %s", eglGetCurrentContext(), str(GL_VERSION),
+         str(GL_RENDERER));
+  }
   if (gCandidates.empty() || ++gSnapshots % 600 == 0) {
     gCandidates.clear();
     GLint linked = 0;
