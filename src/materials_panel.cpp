@@ -4,6 +4,7 @@
 #include "blockmap.hpp"
 #include "icons.hpp"
 #include "itemmap.hpp"
+#include "skin.hpp"
 
 #include <pl/ModMenu.hpp>
 
@@ -42,6 +43,11 @@ void MaterialsPanel::init(std::string moduleId, std::string modId,
   pl::input::registerTouchCallback([this](const pl::input::TouchEvent &e) { return onTouch(e); });
   pl::input::registerTextInputCallback([this](const pl::input::TextInputEvent &e) { return onText(e); });
   pl::input::registerKeyCallback([this](const pl::input::KeyEvent &e) { return onKey(e); });
+  std::thread([this] {  // reads the game's font and textures; the panel keeps its flat look until they are in
+    skin::load();
+    std::lock_guard lock(mu_);
+    redrawLocked();
+  }).detach();
 }
 
 void MaterialsPanel::searchLocked() {
@@ -277,6 +283,9 @@ namespace {
 constexpr uint32_t kPanel = 0xFF18191C, kBorder = 0xFF343A40, kButton = 0xFF24282C, kActiveFill = 0xFF25463B;
 constexpr uint32_t kAccent = 0xFF4AE0A0, kWell = 0xFF151719, kStripe = 0x0AFFFFFF, kText = 0xFFE9ECEF, kDim = 0xFF8D949B;
 constexpr uint32_t kShulker = 0xFFB18BC8;  // shulker-box purple
+// With the game's skin the panel is its light grey, so text that sits straight on it is dark and unshadowed like the
+// game's own; text on buttons and in wells is white with the game's grey and green.
+constexpr uint32_t kInk = 0xFF404040, kInkGreen = 0xFF1C6B1C, kSkinDim = 0xFFAAAAAA, kSkinAccent = 0xFF55FF55;
 
 void rect(std::vector<mm::DrawCommand> &cmds, float x, float y, float w, float h, uint32_t color) {
   cmds.push_back({.type = mm::DrawCommandType::RectFilled, .x = x, .y = y, .w = w, .h = h, .color = color});
@@ -284,6 +293,7 @@ void rect(std::vector<mm::DrawCommand> &cmds, float x, float y, float w, float h
 
 // The overlay has no rounded rectangle, so each corner is built from four slices of a quarter circle.
 void roundRect(std::vector<mm::DrawCommand> &cmds, float x, float y, float w, float h, float r, uint32_t color) {
+  if (skin::available()) return rect(cmds, x, y, w, h, color);  // square corners, like the game's
   r = std::min({r, w / 2, h / 2});
   constexpr int kSlices = 4;
   const float step = r / kSlices;
@@ -304,6 +314,10 @@ void card(std::vector<mm::DrawCommand> &cmds, float x, float y, float w, float h
 
 // `y` is the top of a line `size` tall; the launcher places text by its baseline, so it is moved down to it.
 void text(std::vector<mm::DrawCommand> &cmds, float x, float y, float size, uint32_t color, std::string s) {
+  if (skin::available()) {
+    const int scale = skin::textScale(size);
+    return skin::drawText(cmds, x, y + (size - skin::lineHeight(scale)) / 2, scale, color, s, color != kInk && color != kInkGreen);
+  }
   cmds.push_back({.type = mm::DrawCommandType::Text, .x = x, .y = y + size * 0.85f, .color = color, .size = size,
                   .text = std::move(s)});
 }
@@ -312,6 +326,7 @@ void text(std::vector<mm::DrawCommand> &cmds, float x, float y, float size, uint
 // The launcher's font is proportional, so labels are centred with rough per-character advances (in ems,
 // measured from on-screen labels).
 float textWidth(const std::string &s, float font) {
+  if (skin::available()) return skin::textWidth(s, skin::textScale(font));
   float em = 0;
   for (unsigned char c : s) {
     if ((c & 0xC0) == 0x80) continue;  // UTF-8 continuation byte
@@ -338,6 +353,11 @@ std::string fitText(std::string s, float font, float maxW) {
 
 using icons::Icon;
 
+// The game's panel, button or well in place of a flat card, when its skin is loaded.
+bool skinBox(std::vector<mm::DrawCommand> &cmds, skin::Box kind, float x, float y, float w, float h, float font) {
+  return skin::available() && skin::drawBox(cmds, kind, x, y, w, h, skin::boxScale(skin::textScale(font)));
+}
+
 // A Lucide icon centred in an s x s square at (x, y), drawn at 60% of the square.
 void icon(std::vector<mm::DrawCommand> &cmds, Icon which, float x, float y, float s, uint32_t color = kText) {
   const float px = std::round(s * 0.6f);
@@ -357,15 +377,19 @@ void MaterialsPanel::redrawLocked() {
   if (!toast_.empty()) {
     const float font = sh * 0.04f, w = textWidth(toast_, font) + font * 1.6f, h = font * 1.9f;
     const float x = (sw - w) / 2, y = sh * 0.18f;
-    card(cmds, x, y, w, h, font * 0.6f, std::max(1.0f, std::round(font * 0.06f)), kPanel, kBorder);
+    if (!skinBox(cmds, skin::Box::Button, x, y, w, h, font))
+      card(cmds, x, y, w, h, font * 0.6f, std::max(1.0f, std::round(font * 0.06f)), kPanel, kBorder);
     text(cmds, x + font * 0.8f, y + (h - font) / 2, font, kText, toast_);
   }
   const size_t toastCount = cmds.size();
   if (visible_) {
+    const bool sk = skin::available();
+    const uint32_t accent = sk ? kSkinAccent : kAccent, dim = sk ? kSkinDim : kDim;  // on buttons and in wells
+    const uint32_t ink = sk ? kInk : kDim, inkText = sk ? kInk : kText, inkOn = sk ? kInkGreen : kAccent;  // on the panel
     const float font = sh * 0.032f, pad = font * 0.5f, ctrlH = font * 2.3f;
     row_ = font * 1.55f;
     headerH_ = font * 2.4f;
-    w_ = font * 17;
+    w_ = font * (sk ? 22 : 17);  // the pixel font is wider
     if (px_ < 0) px_ = sw * 0.21f, py_ = sh * 0.12f;  // right of the launcher's own buttons at the top left
     px_ = std::clamp(px_, 0.0f, sw - w_);
     py_ = std::clamp(py_, 0.0f, sh - headerH_);
@@ -374,9 +398,10 @@ void MaterialsPanel::redrawLocked() {
 
     auto button = [&](float bx, float by, float bw, float bh, const std::string &label, const char *key,
                       const char *value, bool active) {
-      card(cmds, bx, by, bw, bh, radius, edge, active ? kActiveFill : kButton, active ? kActiveFill : kBorder);
+      if (!skinBox(cmds, active ? skin::Box::ButtonOn : skin::Box::Button, bx, by, bw, bh, font))
+        card(cmds, bx, by, bw, bh, radius, edge, active ? kActiveFill : kButton, active ? kActiveFill : kBorder);
       if (!label.empty())
-        text(cmds, bx + (bw - textWidth(label, font)) / 2, by + (bh - font) / 2, font, active ? kAccent : kText, label);
+        text(cmds, bx + (bw - textWidth(label, font)) / 2, by + (bh - font) / 2, font, active && !sk ? kAccent : kText, label);
       controls_.push_back({bx, by, bw, bh, key, value});
     };
 
@@ -398,7 +423,7 @@ void MaterialsPanel::redrawLocked() {
         arrow(dx + c + gap, yy + (c + gap) * 2, Icon::ArrowDown, "back");
         const float yx = dx + (c + gap) * 3 + pad * 2;
         arrow(yx, yy, Icon::ArrowUp, "up");
-        text(cmds, yx + (c - textWidth("Y", font)) / 2, yy + c + gap + (c - font) / 2, font, kDim, "Y");
+        text(cmds, yx + (c - textWidth("Y", font)) / 2, yy + c + gap + (c - font) / 2, font, ink, "Y");
         arrow(yx, yy + (c + gap) * 2, Icon::ArrowDown, "down");
         yy += (c + gap) * 3 + pad;
         button(x_ + pad, yy, half, ctrlH, "Rotate +90°", "rotate", "", false);
@@ -411,7 +436,7 @@ void MaterialsPanel::redrawLocked() {
                                                 : "All " + std::to_string(layerCount_) + " layers";
         button(x_ + pad, yy, unit, ctrlH, "<", "layer_down", "", false);
         text(cmds, x_ + pad * 2 + unit + (unit * 3 - textWidth(layerText, font)) / 2, yy + (ctrlH - font) / 2, font,
-             kText, layerText);
+             inkText, layerText);
         button(x_ + pad * 3 + unit * 4, yy, unit, ctrlH, ">", "layer_up", "", false);
         button(x_ + pad * 4 + unit * 5, yy, unit, ctrlH, "All", "layers", "all", !single_);
         yy += ctrlH + pad * 2;
@@ -425,21 +450,23 @@ void MaterialsPanel::redrawLocked() {
         bool substituted = false;
         for (const auto &m : materials_)
           if (m.name == subFor_) count = m.count, substituted = !m.was.empty();
-        text(cmds, x_ + pad * 2, yy + (row_ - font) / 2, font, kDim,
+        text(cmds, x_ + pad * 2, yy + (row_ - font) / 2, font, ink,
              fitText("Replace " + subFor_ + "  (" + countText(count) + ")", font, w_ - pad * 4));
         yy += row_ + pad;
         const float boxX = x_ + pad, boxW = w_ - pad * 2;
-        card(cmds, boxX, yy, boxW, ctrlH, radius, edge, kWell, typing_ ? kAccent : kBorder);
+        if (!skinBox(cmds, skin::Box::Well, boxX, yy, boxW, ctrlH, font))
+          card(cmds, boxX, yy, boxW, ctrlH, radius, edge, kWell, typing_ ? kAccent : kBorder);
         controls_.push_back({boxX, yy, boxW, ctrlH, "_search", ""});
         const std::string shown = search_.empty() && !typing_ ? "Search blocks..." : search_ + (typing_ ? "|" : "");
-        text(cmds, boxX + font * 0.6f, yy + (ctrlH - font) / 2, font, search_.empty() && !typing_ ? kDim : kText, shown);
+        text(cmds, boxX + font * 0.6f, yy + (ctrlH - font) / 2, font, search_.empty() && !typing_ ? dim : kText, shown);
         yy += ctrlH + pad;
         listTop_ = yy;
         listBottom_ = listTop_ + row_ * 5;
         const float wellX = x_ + pad, wellW = w_ - pad * 2;
-        roundRect(cmds, wellX, listTop_, wellW, listBottom_ - listTop_, radius, kWell);
+        if (!skinBox(cmds, skin::Box::Well, wellX, listTop_, wellW, listBottom_ - listTop_, font))
+          roundRect(cmds, wellX, listTop_, wellW, listBottom_ - listTop_, radius, kWell);
         if (results_.empty()) {
-          text(cmds, wellX + font * 0.5f, listTop_ + (row_ - font) / 2, font, kDim,
+          text(cmds, wellX + font * 0.5f, listTop_ + (row_ - font) / 2, font, dim,
                search_.empty() ? "Type a block name" : "No block matches");
         }
         const float contentH = row_ * results_.size();
@@ -468,12 +495,13 @@ void MaterialsPanel::redrawLocked() {
         const std::string title = title_.empty() ? "No structure loaded"
                                                  : title_ + "   " + std::to_string(done_.size()) + "/" +
                                                        std::to_string(materials_.size());
-        text(cmds, x_ + pad * 2, yy + (row_ - font) / 2, font, kDim, title);
+        text(cmds, x_ + pad * 2, yy + (row_ - font) / 2, font, ink, title);
         yy += row_ + pad;
         listTop_ = yy;
         listBottom_ = listTop_ + row_ * 6;
         const float wellX = x_ + pad, wellW = w_ - pad * 2;
-        roundRect(cmds, wellX, listTop_, wellW, listBottom_ - listTop_, radius, kWell);
+        if (!skinBox(cmds, skin::Box::Well, wellX, listTop_, wellW, listBottom_ - listTop_, font))
+          roundRect(cmds, wellX, listTop_, wellW, listBottom_ - listTop_, radius, kWell);
 
         const float contentH = row_ * materials_.size();
         const float maxScroll = std::max(0.0f, contentH - (listBottom_ - listTop_));
@@ -485,7 +513,7 @@ void MaterialsPanel::redrawLocked() {
           if (ry + row_ > listBottom_) break;
           const bool done = done_.count(materials_[k].name) > 0;
           if (k % 2) rect(cmds, wellX, ry, wellW, row_, kStripe);
-          const uint32_t color = done ? kAccent : kText;
+          const uint32_t color = done ? accent : kText;
           // "5134 = 2 [shulker] + 26s + 14": full shulker boxes, full stacks, then loose blocks.
           const size_t n = materials_[k].count;
           const int stack = itemmap::stackSize(materials_[k].name);
@@ -499,7 +527,7 @@ void MaterialsPanel::redrawLocked() {
           }
           const float boxW = b.shulkers ? font * 1.2f : 0;
           const float countX = dotsX - textWidth(head, font) - boxW - textWidth(tail, font);
-          const uint32_t countColor = done ? kAccent : kDim;
+          const uint32_t countColor = done ? accent : dim;
           text(cmds, countX, ry + (row_ - font) / 2, font, countColor, head);
           if (b.shulkers) icon(cmds, Icon::Box, countX + textWidth(head, font), ry + (row_ - boxW) / 2, boxW, kShulker);
           text(cmds, countX + textWidth(head, font) + boxW, ry + (row_ - font) / 2, font, countColor, tail);
@@ -508,13 +536,13 @@ void MaterialsPanel::redrawLocked() {
           text(cmds, nameX, ry + (row_ - font) / 2, font, color,
                fitText((done ? "\xE2\x9C\x93 " : "") + materials_[k].name + (materials_[k].was.empty() ? "" : " *"), font,
                        countX - nameX - font * 0.5f));
-          icon(cmds, Icon::Ellipsis, dotsX + (dotsW - row_) / 2, ry, row_, kDim);
+          icon(cmds, Icon::Ellipsis, dotsX + (dotsW - row_) / 2, ry, row_, dim);
           controls_.push_back({dotsX, ry, dotsW, row_, "_sub", materials_[k].name.c_str()});
         }
         if (maxScroll > 0) {
           const float trackH = listBottom_ - listTop_, barH = std::max(row_, trackH * trackH / contentH);
           roundRect(cmds, wellX + wellW - font * 0.45f, listTop_ + (trackH - barH) * (scroll_ / maxScroll), font * 0.3f,
-                    barH, font * 0.15f, kBorder);
+                    barH, font * 0.15f, sk ? 0xFF8B8B8B : kBorder);
         }
         yy = listBottom_ + pad;
       }
@@ -523,34 +551,34 @@ void MaterialsPanel::redrawLocked() {
     h_ = headerH_ + bodyH;
     // The background's height is only known now, so it goes in under the body, after the toast.
     std::vector<mm::DrawCommand> bg;
-    card(bg, x_, y_, w_, h_, font * 0.8f, edge, kPanel, kBorder);
+    if (!skinBox(bg, skin::Box::Panel, x_, y_, w_, h_, font)) card(bg, x_, y_, w_, h_, font * 0.8f, edge, kPanel, kBorder);
     cmds.insert(cmds.begin() + static_cast<std::ptrdiff_t>(toastCount), bg.begin(), bg.end());
 
     // Header: progress, then lock, Blocks / Move tabs and collapse at the right, over a divider.
-    if (!collapsed_) rect(cmds, x_ + edge, y_ + headerH_, w_ - 2 * edge, edge, kBorder);
+    if (!collapsed_) rect(cmds, x_ + edge, y_ + headerH_, w_ - 2 * edge, edge, sk ? 0xFF8B8B8B : kBorder);
     const std::string progress =
         total_ == 0 ? "--" : std::to_string(static_cast<int>(built_ * 100 / total_)) + "% built";
     const float dot = std::max(2.0f, std::round(font * 0.14f));  // 2x3 grip dots: the header drags the panel
     for (int c = 0; c < 2; ++c)
       for (int r = -1; r <= 1; ++r)
-        rect(cmds, x_ + pad * 1.5f + c * dot * 2.5f, y_ + headerH_ / 2 + r * dot * 2.5f - dot / 2, dot, dot, kDim);
-    text(cmds, x_ + pad * 2.5f + dot * 4, y_ + (headerH_ - font) / 2, font, total_ ? kAccent : kDim, progress);
+        rect(cmds, x_ + pad * 1.5f + c * dot * 2.5f, y_ + headerH_ / 2 + r * dot * 2.5f - dot / 2, dot, dot, ink);
+    text(cmds, x_ + pad * 2.5f + dot * 4, y_ + (headerH_ - font) / 2, font, total_ ? inkOn : ink, progress);
     const float s = headerH_ - pad * 2;
     float bx = x_ + w_ - pad - s;
     button(bx, y_ + pad, s, s, "", "_collapse", "", false);
-    icon(cmds, collapsed_ ? Icon::ChevronDown : Icon::ChevronUp, bx, y_ + pad, s, kDim);
+    icon(cmds, collapsed_ ? Icon::ChevronDown : Icon::ChevronUp, bx, y_ + pad, s, dim);
     bx -= s + pad;
     button(bx, y_ + pad, s, s, "", "_tab", "move", !collapsed_ && tab_ == Tab::Move);
-    icon(cmds, Icon::Move, bx, y_ + pad, s, !collapsed_ && tab_ == Tab::Move ? kAccent : kDim);
+    icon(cmds, Icon::Move, bx, y_ + pad, s, !collapsed_ && tab_ == Tab::Move ? accent : dim);
     bx -= s + pad;
     button(bx, y_ + pad, s, s, "", "_tab", "blocks", !collapsed_ && tab_ == Tab::Blocks);
-    icon(cmds, Icon::List, bx, y_ + pad, s, !collapsed_ && tab_ == Tab::Blocks ? kAccent : kDim);
+    icon(cmds, Icon::List, bx, y_ + pad, s, !collapsed_ && tab_ == Tab::Blocks ? accent : dim);
     bx -= s + pad;
     button(bx, y_ + pad, s, s, "", "lock", locked_ ? "0" : "1", locked_);
-    icon(cmds, locked_ ? Icon::Lock : Icon::LockOpen, bx, y_ + pad, s, locked_ ? kAccent : kDim);
+    icon(cmds, locked_ ? Icon::Lock : Icon::LockOpen, bx, y_ + pad, s, locked_ ? accent : dim);
     bx -= s + pad;
     button(bx, y_ + pad, s, s, "", "_menu", "", false);
-    icon(cmds, Icon::Settings, bx, y_ + pad, s, kDim);
+    icon(cmds, Icon::Settings, bx, y_ + pad, s, dim);
     // Closed: the panel is laid out (so it reopens where it was) but nothing of it is drawn or tappable.
     if (!open_) {
       cmds.resize(toastCount);

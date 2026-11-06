@@ -12,6 +12,7 @@ in `src/game.hpp`; a game update means re-checking every one of them together.
 |---|---|
 | `main.cpp` | The mod itself: launcher settings page, Help tab, loading structures, substitutions, saved settings (`settings.txt`), wiring the modules below together. |
 | `materials_panel.*` | The floating panel BE-Matica draws itself (Move and Blocks tabs, Substitute view, round open/close button). |
+| `skin.*`, `skin_core.*` | The Minecraft look of the panel, see [Panel skin](#panel-skin). |
 | `icons.*` | Lucide SVG icons rendered with lunasvg and registered as overlay images. |
 | `waila.*` | The card at the top of the screen: the block under the crosshair and what the structure wants there. |
 | `hologram.*` | Hooks world rendering and draws the ghost blocks; tracks which cells are already built. |
@@ -25,6 +26,27 @@ in `src/game.hpp`; a game update means re-checking every one of them together.
 
 Pure files (`orient.hpp`, `itemmap.hpp`, `library`, `mesh`, file formats) have host tests in `tests/`, run by
 `scripts/test.sh`. Everything that touches the game can only be tested on a device.
+
+## Panel skin
+
+`skin::load()` (background thread started by `MaterialsPanel::init`) opens the game's apk like the texture atlas does
+(`gameArchiveCandidates` + `ResourcePack`) and reads, under `resource_packs/vanilla/`: the font sheet (first found of
+`font/default8.png`, `font/glyph_00.png`, `font/ascii.png`; a 16x16 grid of glyph cells) and the textures
+`textures/ui/dialog_background_opaque`, `button_borderless_dark`, `button_borderless_lightpressed` (else `...lighthover`)
+and `edit_box_indent`, each with its `.json` (`nineslice_size`, `base_size`). Nothing of Mojang's is in the repo. If any
+is missing `skin::available()` stays false and the panel draws exactly as before.
+
+- **Text:** a glyph's advance is its rightmost non-transparent column + 1, plus 1 pixel of spacing; a space is half a cell.
+  Text is drawn one image per glyph, nearest-neighbour at an integer scale, with the game's shadow (1 font pixel down and
+  right, colour * 0.25). Per-glyph images mean the overlay only ever holds glyph x colour x scale images (the overlay has
+  no way to free an image, so per-string images would leak as counts change). `…`, `✓` and `°` are not in the ASCII sheet
+  and are replaced (`glyphCodes`).
+- **Boxes:** `drawBox` renders a 9-slice (borders scaled by an integer, middle stretched) at the exact pixel size and
+  caches it by (texture, w, h, scale), capped at 256 images; past the cap the flat shape is drawn.
+- **In `materials_panel.cpp`:** the skin branches sit inside `text`, `textWidth`, `roundRect` and the `skinBox` call that
+  precedes each `card`; layout uses the real glyph advances. Text directly on the grey panel is dark and unshadowed
+  (`kInk`), as in the game.
+- Pure logic (`skin_core.*`: glyph widths, 9-slice maths, json) is covered by `tests/skin_test.cpp`.
 
 ## Loading a structure
 
