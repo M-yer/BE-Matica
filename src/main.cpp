@@ -1,5 +1,6 @@
 #include "blockmap.hpp"
 #include "easyplace.hpp"
+#include "help_text.hpp"
 #include "hologram.hpp"
 #include "textured.hpp"
 #include "library.hpp"
@@ -11,6 +12,8 @@
 #include <pl/Mod.hpp>
 #include <pl/ModMenu.hpp>
 #include <pl/ModMenuConfig.hpp>
+
+#include <sys/system_properties.h>
 
 #include <algorithm>
 #include <array>
@@ -269,6 +272,9 @@ private:
       lookOn_ = value == "true" || value == "1";
       applyLookLocked();
       saveSettingsLocked();
+    } else if (key == "helplang") {
+      helpLang_ = value == "en" || value == "es" || value == "pt" ? std::string(value) : "auto";
+      saveSettingsLocked();
     } else if (key == "outlines" || key == "fill") {
       const bool on = value == "true" || value == "1";
       (key == "outlines" ? outlinesOn_ : fillOn_) = on;
@@ -388,45 +394,32 @@ private:
                     .hasCurrentValue = true, .placeholder = "0", .maxLength = 9, .disabled = locked_});
   }
 
-  // The Help tab: one Info row per topic (the launcher caps a description at 1024 characters).
-  static void addHelpNodes(mm::ConfigSchemaBuilder &schema) {
+  // Android keeps the user's language in a system property; the first two letters pick the help language.
+  static help::Lang deviceLang() {
+    char locale[PROP_VALUE_MAX] = "";
+    if (!__system_property_get("persist.sys.locale", locale)) __system_property_get("ro.product.locale", locale);
+    return help::langForLocale(locale);
+  }
+
+  // The Help tab: a language picker, then one Info row per topic.
+  void addHelpNodes(mm::ConfigSchemaBuilder &schema) const {
     using N = mm::ConfigNodeV2;
-    static constexpr const char *kTopics[][2] = {
-        {"Getting started",
-         "1. On the BE-Matica tab, tap Import structure and pick a .mcstructure (or a Java .litematic, which is "
-         "converted).\n2. Choose it under Structure. The hologram appears with its corner where you stand.\n"
-         "3. Build inside the blue ghost blocks. Blocks you place correctly disappear from the hologram."},
-        {"Control panel",
-         "The floating panel is on screen while BE-Matica Controls is on. Drag its header (the dots) to move it; "
-         "the arrow folds it away.\nThe header shows how much of the shown structure is built.\n"
-         "Move tab: the D-pad shifts the hologram one block the way you're facing (up = forward, left = your left), the \u25B2 / \u25BC "
-         "pair moves it up and down, Rotate +90\u00B0 turns it, Mirror flips it, "
-         "< and > pick a single layer, All shows every layer.\nBlocks tab: every block the structure needs; tap a "
-         "row to tick it off."},
-        {"Substitute a block",
-         "Use another block where the type doesn't matter, e.g. cobblestone for 500 smooth stone.\n"
-         "In the panel's Blocks tab, tap \u22EF on a row. Type part of a name and tap a result, or tap Held block and "
-         "then tap any block while holding the replacement (that tap places nothing).\nEvery block of that type is "
-         "replaced: hologram, Easy Place and counts follow. Substituted rows show *; tap \u22EF again for Undo. "
-         "The structure file is not changed. Substitutions stay until you load another structure."},
-        {"Lock and saved placement",
-         "The structure, its position, rotation, mirror and layer view are saved whenever they change, and come "
-         "back when you restart the game or rejoin.\nThe padlock in the panel header locks the placement: moving, "
-         "rotating, mirroring and Move hologram to me are blocked until you unlock it."},
-        {"Easy Place",
-         "Turn it on in the Easy Place tab. Hold the block the structure wants, aim at its ghost block and tap: "
-         "it is placed exactly there. Holding the wrong block tells you which one to hold.\nWater and lava: "
-         "use a bucket and aim at the spot; the game pours it as usual."},
-        {"Hologram look",
-         "Hologram opacity, Block outlines and Tinted fill change how ghost blocks are drawn. Show hologram hides "
-         "it without unloading the structure."},
-        {"Where files go",
-         "Imported structures are kept in Android/data/<launcher>/files/BE-Matica/structures. Tap Refresh list "
-         "after adding files there yourself."},
-    };
-    for (size_t k = 0; k < std::size(kTopics); ++k)
-      schema.node(N{.id = "help" + std::to_string(k), .category = "help", .title = kTopics[k][0],
-                    .description = kTopics[k][1], .type = mm::ConfigControlTypeV2::Info});
+    const help::Lang lang = helpLang_ == "en"   ? help::Lang::English
+                            : helpLang_ == "es" ? help::Lang::Spanish
+                            : helpLang_ == "pt" ? help::Lang::Portuguese
+                                                : deviceLang();
+    N pick{.id = "helplang", .key = "helplang", .category = "help", .title = help::languageLabel(lang),
+           .type = mm::ConfigControlTypeV2::Choice, .choiceStyle = mm::ConfigChoiceStyleV2::Dropdown,
+           .defaultValue = "auto", .currentValue = helpLang_, .hasCurrentValue = true};
+    pick.options = {{.value = "auto", .label = "Auto"},
+                    {.value = "en", .label = "English"},
+                    {.value = "es", .label = "Espa\u00F1ol"},
+                    {.value = "pt", .label = "Portugu\u00EAs"}};
+    schema.node(std::move(pick));
+    const auto topics = help::topics(lang);
+    for (size_t k = 0; k < topics.size(); ++k)
+      schema.node(N{.id = "help" + std::to_string(k), .category = "help", .title = topics[k].title,
+                    .description = topics[k].text, .type = mm::ConfigControlTypeV2::Info});
   }
 
   void syncLayerLocked() {
@@ -776,6 +769,7 @@ private:
       else if (key == "autolock_pct") autoLockPct_ = std::clamp(std::atoi(value.c_str()), 1, 100);
       else if (key == "remember") rememberOn_ = value == "1";
       else if (key == "lookat") lookOn_ = value == "1";
+      else if (key == "helplang") helpLang_ = value == "en" || value == "es" || value == "pt" ? value : "auto";
       else if (key == "subs")
         for (size_t start = 0; start < value.size();) {
           const size_t end = std::min(value.find(';', start), value.size()), gt = value.find('>', start);
@@ -793,7 +787,7 @@ private:
                                   << "\nlayers=" << static_cast<int>(view_.layers) << "\nlayer=" << view_.layer
                                   << "\nlocked=" << locked_ << "\nautolock=" << autoLockOn_
                                   << "\nautolock_pct=" << autoLockPct_ << "\nremember=" << rememberOn_
-                                  << "\nlookat=" << lookOn_ << "\nsubs=";
+                                  << "\nlookat=" << lookOn_ << "\nhelplang=" << helpLang_ << "\nsubs=";
     std::ofstream(settingsFile(), std::ios::app) << [&] {
       std::string out;
       for (const auto &[from, to] : subs_) out += (out.empty() ? "" : ";") + from + ">" + to;
@@ -817,6 +811,7 @@ private:
   MaterialsPanel panel_;
   LookCard waila_;
   bool lookOn_ = true;
+  std::string helpLang_ = "auto";  // auto | en | es | pt
   bool hologramOk_ = false, hologramOn_ = true, texturedOn_ = false, outlinesOn_ = true, fillOn_ = true;
   bool easyPlaceOk_ = false, easyPlaceOn_ = false, airPlaceOn_ = true, autoSelectOn_ = true;
   int opacity_ = 45;
