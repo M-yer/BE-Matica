@@ -254,10 +254,10 @@ int main(int argc, char **argv) {
   if (wantSkin) snap(panel, dir, "move");
   tapControl(panel, "_tab", "blocks");
   // Tick the second row by tapping it, like a player would.
-  tap(panel.x_ + panel.w_ * 0.4f, panel.listTop_ + panel.row_ * 1.5f);
+  tap(panel.x_ + panel.w_ * 0.4f, panel.listTop_ + panel.itemH_ * 1.5f);
   snap(panel, dir, "blocks" + mode);
   if (wantSkin) {
-    tapControl(panel, "_sub", "spruce_slab");
+    tapControl(panel, "_sub", "spruce_stairs");
     panel.onText({"spruce"});
     snap(panel, dir, "substitute");
     tapControl(panel, "_back");

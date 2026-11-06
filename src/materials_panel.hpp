@@ -71,6 +71,7 @@ private:
   // to (negative until the first redraw places it).
   float px_ = -1, py_ = -1;
   float x_ = 0, y_ = 0, w_ = 0, h_ = 0, row_ = 0, headerH_ = 0, listTop_ = 0, listBottom_ = 0, scroll_ = 0;
+  float itemH_ = 0;  // a Blocks-list row: name over count
 
   int activePointer_ = -1;
   float downX_ = 0, downY_ = 0, lastX_ = 0, lastY_ = 0;

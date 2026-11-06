@@ -96,6 +96,12 @@ void load() {
   if (!font) info("BE-Matica: Skin unavailable: %s", "no font sheet");
   bool all = font;
   for (Texture &t : gTextures) all = loadTexture(pack, t) && all;
+  // The game's pressed green is very saturated next to the grey panel; mute it halfway to grey and darken it a bit.
+  for (size_t i = 0; i + 3 < gTextures[static_cast<int>(Box::ButtonOn)].image.rgba.size(); i += 4) {
+    uint8_t *p = &gTextures[static_cast<int>(Box::ButtonOn)].image.rgba[i];
+    const float l = 0.3f * p[0] + 0.59f * p[1] + 0.11f * p[2];
+    for (int c = 0; c < 3; ++c) p[c] = static_cast<uint8_t>(std::clamp((l + (p[c] - l) * 0.5f) * 0.85f, 0.0f, 255.0f));
+  }
   if (all) gReady = true;
 }
 

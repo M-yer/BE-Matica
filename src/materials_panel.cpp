@@ -23,12 +23,14 @@ namespace {
 // Android MotionEvent actions.
 constexpr int kDown = 0, kUp = 1, kMove = 2, kCancel = 3, kPointerDown = 5, kPointerUp = 6;
 
-std::string countText(size_t n) {
-  std::string s = std::to_string(n);
-  if (n >= 64) {
-    s += "  (" + std::to_string(n / 64) + " st";
-    if (n % 64) s += " + " + std::to_string(n % 64);
-    s += ")";
+// "stripped_spruce_wood" -> "Stripped Spruce Wood", close to the game's own item names.
+std::string displayName(std::string_view id) {
+  std::string s(id.substr(id.rfind(':') + 1));
+  bool start = true;
+  for (char &c : s) {
+    if (c == '_') c = ' ';
+    else if (start) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    start = c == ' ';
   }
   return s;
 }
@@ -263,7 +265,7 @@ bool MaterialsPanel::onTouch(const pl::input::TouchEvent &e) {
       return true;
     }
     if (key.empty() && tab_ == Tab::Blocks && subFor_.empty() && e.y > listTop_ && e.y < listBottom_) {
-      const auto idx = static_cast<size_t>((e.y - listTop_ + scroll_) / row_);
+      const auto idx = static_cast<size_t>((e.y - listTop_ + scroll_) / itemH_);
       if (idx < materials_.size()) {
         const auto &name = materials_[idx].name;
         if (!done_.erase(name)) done_.insert(name);
@@ -286,6 +288,7 @@ constexpr uint32_t kShulker = 0xFFB18BC8;  // shulker-box purple
 // With the game's skin the panel is its light grey, so text that sits straight on it is dark and unshadowed like the
 // game's own; text on buttons and in wells is white with the game's grey and green.
 constexpr uint32_t kInk = 0xFF404040, kInkGreen = 0xFF1C6B1C, kSkinDim = 0xFFAAAAAA, kSkinAccent = 0xFF55FF55;
+constexpr uint32_t kSkinCount = 0xFFD0D0D0;  // counts under the names: brighter than kSkinDim to read on the stripes
 
 void rect(std::vector<mm::DrawCommand> &cmds, float x, float y, float w, float h, uint32_t color) {
   cmds.push_back({.type = mm::DrawCommandType::RectFilled, .x = x, .y = y, .w = w, .h = h, .color = color});
@@ -374,14 +377,6 @@ void MaterialsPanel::redrawLocked() {
   controls_.clear();
   const auto surface = mm::getHudSurfaceSize();
   const float sh = surface.height > 0 ? surface.height : 1080, sw = surface.width > 0 ? surface.width : 2400;
-  if (!toast_.empty()) {
-    const float font = sh * 0.04f, w = textWidth(toast_, font) + font * 1.6f, h = font * 1.9f;
-    const float x = (sw - w) / 2, y = sh * 0.18f;
-    if (!skinBox(cmds, skin::Box::Button, x, y, w, h, font))
-      card(cmds, x, y, w, h, font * 0.6f, std::max(1.0f, std::round(font * 0.06f)), kPanel, kBorder);
-    text(cmds, x + font * 0.8f, y + (h - font) / 2, font, kText, toast_);
-  }
-  const size_t toastCount = cmds.size();
   if (visible_) {
     const bool sk = skin::available();
     const uint32_t accent = sk ? kSkinAccent : kAccent, dim = sk ? kSkinDim : kDim;  // on buttons and in wells
@@ -412,7 +407,8 @@ void MaterialsPanel::redrawLocked() {
       float yy = top;
       if (tab_ == Tab::Move) {
         // D-pad moves along the player's view (up = forward, left = their left); the column on the right moves along Y.
-        const float c = ctrlH, gap = pad * 0.5f, dx = x_ + (w_ - (c * 4 + gap * 2 + pad * 2)) / 2;
+        const float c = ctrlH * 1.15f, gap = pad * 0.5f, split = pad * 4;
+        const float dx = x_ + (w_ - (c * 4 + gap * 2 + split)) / 2;
         auto arrow = [&](float bx, float by, Icon which, const char *key) {
           button(bx, by, c, c, "", key, "", false);
           icon(cmds, which, bx, by, c);
@@ -421,9 +417,12 @@ void MaterialsPanel::redrawLocked() {
         arrow(dx, yy + c + gap, Icon::ArrowLeft, "left");
         arrow(dx + (c + gap) * 2, yy + c + gap, Icon::ArrowRight, "right");
         arrow(dx + c + gap, yy + (c + gap) * 2, Icon::ArrowDown, "back");
-        const float yx = dx + (c + gap) * 3 + pad * 2;
+        const float yx = dx + (c + gap) * 2 + c + split;
         arrow(yx, yy, Icon::ArrowUp, "up");
-        text(cmds, yx + (c - textWidth("Y", font)) / 2, yy + c + gap + (c - font) / 2, font, ink, "Y");
+        // The Y column's label sits in a well between its arrows, so it reads as part of the column.
+        const float ly = yy + c + gap;
+        if (!skinBox(cmds, skin::Box::Well, yx, ly, c, c, font)) roundRect(cmds, yx, ly, c, c, radius, kWell);
+        text(cmds, yx + (c - textWidth("Y", font)) / 2, ly + (c - font) / 2, font, kText, "Y");
         arrow(yx, yy + (c + gap) * 2, Icon::ArrowDown, "down");
         yy += (c + gap) * 3 + pad;
         button(x_ + pad, yy, half, ctrlH, "Rotate +90°", "rotate", "", false);
@@ -451,13 +450,13 @@ void MaterialsPanel::redrawLocked() {
         for (const auto &m : materials_)
           if (m.name == subFor_) count = m.count, substituted = !m.was.empty();
         text(cmds, x_ + pad * 2, yy + (row_ - font) / 2, font, ink,
-             fitText("Replace " + subFor_ + "  (" + countText(count) + ")", font, w_ - pad * 4));
+             fitText("Replace " + displayName(subFor_) + " (" + std::to_string(count) + ")", font, w_ - pad * 4));
         yy += row_ + pad;
         const float boxX = x_ + pad, boxW = w_ - pad * 2;
         if (!skinBox(cmds, skin::Box::Well, boxX, yy, boxW, ctrlH, font))
           card(cmds, boxX, yy, boxW, ctrlH, radius, edge, kWell, typing_ ? kAccent : kBorder);
         controls_.push_back({boxX, yy, boxW, ctrlH, "_search", ""});
-        const std::string shown = search_.empty() && !typing_ ? "Search blocks..." : search_ + (typing_ ? "|" : "");
+        const std::string shown = search_.empty() && !typing_ ? "Search blocks..." : search_ + (typing_ ? "_" : "");
         text(cmds, boxX + font * 0.6f, yy + (ctrlH - font) / 2, font, search_.empty() && !typing_ ? dim : kText, shown);
         yy += ctrlH + pad;
         listTop_ = yy;
@@ -476,7 +475,7 @@ void MaterialsPanel::redrawLocked() {
           const float ry = listTop_ + k * row_ - scroll_;
           if (ry + row_ > listBottom_) break;
           if (k % 2) rect(cmds, wellX, ry, wellW, row_, kStripe);
-          text(cmds, wellX + font * 0.5f, ry + (row_ - font) / 2, font, kText, fitText(results_[k], font, wellW - font * 1.5f));
+          text(cmds, wellX + font * 0.5f, ry + (row_ - font) / 2, font, kText, fitText(displayName(results_[k]), font, wellW - font * 1.5f));
           controls_.push_back({wellX, ry, wellW, row_, "_pick", results_[k].c_str()});
         }
         yy = listBottom_ + pad;
@@ -498,22 +497,27 @@ void MaterialsPanel::redrawLocked() {
         text(cmds, x_ + pad * 2, yy + (row_ - font) / 2, font, ink, title);
         yy += row_ + pad;
         listTop_ = yy;
-        listBottom_ = listTop_ + row_ * 6;
+        itemH_ = font * 2.7f;
+        listBottom_ = listTop_ + itemH_ * 4;
         const float wellX = x_ + pad, wellW = w_ - pad * 2;
         if (!skinBox(cmds, skin::Box::Well, wellX, listTop_, wellW, listBottom_ - listTop_, font))
           roundRect(cmds, wellX, listTop_, wellW, listBottom_ - listTop_, radius, kWell);
 
-        const float contentH = row_ * materials_.size();
+        const float contentH = itemH_ * materials_.size();
         const float maxScroll = std::max(0.0f, contentH - (listBottom_ - listTop_));
         scroll_ = std::clamp(scroll_, 0.0f, maxScroll);
-        // Each row, left to right: name (cut to fit), count (right-aligned), the ⋯ button, then room for the scrollbar.
+        // Each row: the name on top (full width), the count under it, the ⋯ button at the right, then the scrollbar.
         const float dotsW = row_ * 1.1f, dotsX = wellX + wellW - font * 0.7f - dotsW;
-        for (size_t k = static_cast<size_t>(scroll_ / row_); k < materials_.size(); ++k) {
-          const float ry = listTop_ + k * row_ - scroll_;
-          if (ry + row_ > listBottom_) break;
+        const float nameX = wellX + font * 0.5f, line = font * 1.2f, lineTop = (itemH_ - line - font) / 2;
+        for (size_t k = static_cast<size_t>(scroll_ / itemH_); k < materials_.size(); ++k) {
+          const float ry = listTop_ + k * itemH_ - scroll_;
+          if (ry + itemH_ > listBottom_ + 0.5f) break;
           const bool done = done_.count(materials_[k].name) > 0;
-          if (k % 2) rect(cmds, wellX, ry, wellW, row_, kStripe);
-          const uint32_t color = done ? accent : kText;
+          if (k % 2) rect(cmds, wellX, ry, wellW, itemH_, kStripe);
+          // A ticked row is green; a substituted block is marked with *, and its ⋯ view offers Undo.
+          text(cmds, nameX, ry + lineTop, font, done ? accent : kText,
+               fitText((done ? "\xE2\x9C\x93 " : "") + displayName(materials_[k].name) + (materials_[k].was.empty() ? "" : " *"),
+                       font, dotsX - nameX - font * 0.3f));
           // "5134 = 2 [shulker] + 26s + 14": full shulker boxes, full stacks, then loose blocks.
           const size_t n = materials_[k].count;
           const int stack = itemmap::stackSize(materials_[k].name);
@@ -525,19 +529,13 @@ void MaterialsPanel::redrawLocked() {
             if (b.stacks) tail += (b.shulkers ? " + " : "") + std::to_string(b.stacks) + "s";
             if (b.rest) tail += (b.shulkers || b.stacks ? " + " : "") + std::to_string(b.rest);
           }
-          const float boxW = b.shulkers ? font * 1.2f : 0;
-          const float countX = dotsX - textWidth(head, font) - boxW - textWidth(tail, font);
-          const uint32_t countColor = done ? accent : dim;
-          text(cmds, countX, ry + (row_ - font) / 2, font, countColor, head);
-          if (b.shulkers) icon(cmds, Icon::Box, countX + textWidth(head, font), ry + (row_ - boxW) / 2, boxW, kShulker);
-          text(cmds, countX + textWidth(head, font) + boxW, ry + (row_ - font) / 2, font, countColor, tail);
-          // A substituted block is marked with *; its ⋯ view offers Undo.
-          const float nameX = wellX + font * 0.5f;
-          text(cmds, nameX, ry + (row_ - font) / 2, font, color,
-               fitText((done ? "\xE2\x9C\x93 " : "") + materials_[k].name + (materials_[k].was.empty() ? "" : " *"), font,
-                       countX - nameX - font * 0.5f));
-          icon(cmds, Icon::Ellipsis, dotsX + (dotsW - row_) / 2, ry, row_, dim);
-          controls_.push_back({dotsX, ry, dotsW, row_, "_sub", materials_[k].name.c_str()});
+          const float boxW = b.shulkers ? font * 1.2f : 0, cy = ry + lineTop + line;
+          const uint32_t countColor = done ? accent : sk ? kSkinCount : kDim;
+          text(cmds, nameX, cy, font, countColor, head);
+          if (b.shulkers) icon(cmds, Icon::Box, nameX + textWidth(head, font), cy + (font - boxW) / 2, boxW, kShulker);
+          text(cmds, nameX + textWidth(head, font) + boxW, cy, font, countColor, tail);
+          icon(cmds, Icon::Ellipsis, dotsX + (dotsW - row_) / 2, ry + (itemH_ - row_) / 2, row_, dim);
+          controls_.push_back({dotsX, ry, dotsW, itemH_, "_sub", materials_[k].name.c_str()});
         }
         if (maxScroll > 0) {
           const float trackH = listBottom_ - listTop_, barH = std::max(row_, trackH * trackH / contentH);
@@ -549,10 +547,10 @@ void MaterialsPanel::redrawLocked() {
       bodyH = yy - (y_ + headerH_);
     }
     h_ = headerH_ + bodyH;
-    // The background's height is only known now, so it goes in under the body, after the toast.
+    // The background's height is only known now, so it goes in under the body.
     std::vector<mm::DrawCommand> bg;
     if (!skinBox(bg, skin::Box::Panel, x_, y_, w_, h_, font)) card(bg, x_, y_, w_, h_, font * 0.8f, edge, kPanel, kBorder);
-    cmds.insert(cmds.begin() + static_cast<std::ptrdiff_t>(toastCount), bg.begin(), bg.end());
+    cmds.insert(cmds.begin(), bg.begin(), bg.end());
 
     // Header: progress, then lock, Blocks / Move tabs and collapse at the right, over a divider.
     if (!collapsed_) rect(cmds, x_ + edge, y_ + headerH_, w_ - 2 * edge, edge, sk ? 0xFF8B8B8B : kBorder);
@@ -581,7 +579,7 @@ void MaterialsPanel::redrawLocked() {
     icon(cmds, Icon::Settings, bx, y_ + pad, s, dim);
     // Closed: the panel is laid out (so it reopens where it was) but nothing of it is drawn or tappable.
     if (!open_) {
-      cmds.resize(toastCount);
+      cmds.clear();
       controls_.clear();
     }
 
@@ -596,6 +594,14 @@ void MaterialsPanel::redrawLocked() {
     if (!badge.empty())
       cmds.push_back({.type = mm::DrawCommandType::Image, .x = std::round(bx_), .y = std::round(by_), .w = bs_, .h = bs_,
                       .color = 0xFFFFFFFF, .imageId = badge});
+  }
+  // The toast goes last so it is never hidden under the panel.
+  if (!toast_.empty()) {
+    const float font = sh * 0.04f, w = textWidth(toast_, font) + font * 1.6f, h = font * 1.9f;
+    const float x = (sw - w) / 2, y = sh * 0.18f;
+    if (!skinBox(cmds, skin::Box::Button, x, y, w, h, font))
+      card(cmds, x, y, w, h, font * 0.6f, std::max(1.0f, std::round(font * 0.06f)), kPanel, kBorder);
+    text(cmds, x + font * 0.8f, y + (h - font) / 2, font, kText, toast_);
   }
   mm::submitDrawCommands(moduleId_, cmds);
 }
