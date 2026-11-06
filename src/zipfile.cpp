@@ -5,6 +5,7 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -154,6 +155,8 @@ bool ZipArchive::read(const std::string &name, std::vector<uint8_t> &out, size_t
 
 std::vector<std::string> gameArchiveCandidates() {
   namespace fs = std::filesystem;
+  // Lets tools/panel_preview.cpp point the skin at a stand-in archive on a desktop, where there is no running game.
+  if (const char *fake = std::getenv("BEMATICA_GAME_APK"); fake && *fake) return {fake};
   std::set<std::string> seen;
   std::vector<std::string> out;
   auto add = [&](const fs::path &p) {
