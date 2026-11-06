@@ -171,6 +171,8 @@ constexpr unsigned LevelRendererPlayer_selectionOverlayMat = 0x1028;  // Materia
 constexpr unsigned LevelRendererPlayer_selectionBoxMat = 0x1088;      // MaterialPtr, lines
 constexpr unsigned ScreenContext_colorHolder = 0x30;                // float[4] tint applied to meshes
 constexpr unsigned ScreenContext_tessellator = 0xB0;
+constexpr unsigned Tessellator_useTransform = 0x210;  // bool: Tessellator::vertex multiplies by the matrix below (26.60.4 0xac2aca0)
+constexpr unsigned Tessellator_transform = 0x214;     // mat4, column-major, applied before scale + postTransformOffset
 constexpr unsigned Tessellator_postTransformOffset = 0x1CC;         // Vec3
 constexpr unsigned GameMode_player = 0x8;
 // ECS (EnTT): Actor+0x8 is its EntityContext {.., registry* at +0x8, entity id at +0x10}. Component pools are found

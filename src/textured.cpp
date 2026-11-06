@@ -43,6 +43,11 @@ std::atomic_bool gEnabled{false};
 std::atomic_bool gReady{false};
 TessBeginFn gBegin = nullptr;
 RenderMeshFn gRenderMesh = nullptr;
+// renderMeshImmediately(ScreenContext&, Tessellator&, MaterialPtr const&, <texture for slot 0>, <extra variant>)
+// (26.60.4 0xb76a204): the overload whose texture reaches the material's texture slot 0 (via 0x117ae714). The plain
+// one above passes an empty texture list, so block materials draw white.
+using RenderMeshTexFn = void (*)(void *screenContext, void *tess, void *material, const void *texture0, void *extra);
+RenderMeshTexFn gRenderMeshTex = nullptr;
 AppendBlockFn gAppend = nullptr;
 BlockRegistryFn gRegistry = nullptr;
 BlockLookupFn gLookup = nullptr;
@@ -101,10 +106,11 @@ struct Atlas {
   char *holder = nullptr;
   uint64_t source = 0;  // first word of the atlas object the copy was made from, to notice a resource reload
 };
-Atlas gAtlas;
+std::map<unsigned, Atlas> gAtlases;  // TEMPORARY: one owned copy per LevelRenderer texture slot tried
 
-char *atlasTexture(const char *levelRenderer) {
-  const char *atlasObj = levelRenderer + off::LevelRenderer_atlasTexture;
+char *atlasTexture(const char *levelRenderer, unsigned slot = off::LevelRenderer_atlasTexture) {
+  Atlas &gAtlas = gAtlases[slot];
+  const char *atlasObj = levelRenderer + slot;
   uint64_t w[2]{};
   uint64_t probe = 0;
   if (!safeRead(atlasObj, w, sizeof(w)) || !w[0] || !w[1] || !safeRead(reinterpret_cast<void *>(w[0]), &probe, 8)) return nullptr;
@@ -125,7 +131,7 @@ char *atlasTexture(const char *levelRenderer) {
     return nullptr;
   }
   gAtlas = {holder, w[0]};
-  info("BE-Matica: Textured atlas found at LevelRenderer+%#x (texture %#llx), owned copy %p", off::LevelRenderer_atlasTexture,
+  info("BE-Matica: Textured atlas found at LevelRenderer+%#x (texture %#llx), owned copy %p", slot,
        static_cast<unsigned long long>(w[0]), static_cast<void *>(holder));
   return holder + 0x18;
 }
@@ -236,6 +242,15 @@ void install(pl::log::Logger &log) {
     }
     *w.out = reinterpret_cast<void *>(it->second);
   }
+  // No signature of its own yet: it sits 0x4e0 after the plain overload in 26.60.4; used only if its prologue matches.
+  {
+    static constexpr uint32_t kProlog[] = {0xa9bb7bfd, 0xf9000bfc, 0xa9025ff8, 0xa90357f6, 0xa9044ff4, 0x910003fd};
+    const char *cand = reinterpret_cast<const char *>(gRenderMesh) + 0x4e0;
+    uint32_t got[std::size(kProlog)];
+    if (safeRead(cand, got, sizeof(got)) && std::memcmp(got, kProlog, sizeof(got)) == 0)
+      gRenderMeshTex = reinterpret_cast<RenderMeshTexFn>(const_cast<char *>(cand));
+    log.info("BE-Matica: Textured slot-0 renderMeshImmediately {}", gRenderMeshTex ? "found" : "NOT found (blocks draw untextured)");
+  }
   gReady = true;
   log.info("BE-Matica: Textured ready (all signatures resolved)");
 }
@@ -264,11 +279,32 @@ bool draw(void *screenContext, void *tess, const char *levelRenderer, const char
   if (!readPtr(levelRenderer, off::LevelRenderer_clientInstance, clientInstance)) return fail("no ClientInstance");
   if (!readPtr(clientInstance, off::ClientInstance_blockTessellator, blockTess)) return fail("no BlockTessellator");
   if (!readPtr(clientInstance, off::ClientInstance_itemInHandRenderer, itemInHand)) return fail("no ItemInHandRenderer");
-  void *material = itemInHand + off::ItemInHandRenderer_matBlendBlock;
+  // TEMPORARY device experiment: which held-block material shows the block models on 1.26.60. Each is tried for 5 s.
+  static constexpr unsigned kMats[] = {off::ItemInHandRenderer_matAlphaColoredBlock, off::ItemInHandRenderer_matBlendBlock,
+                                       off::ItemInHandRenderer_matOpaqueBlockColor, off::ItemInHandRenderer_matAlphaOneSidedColoredBlock};
+  const auto secs = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  const unsigned matOff = kMats[(secs / 5) % std::size(kMats)];
+  static unsigned lastMat = 0;
+  if (matOff != lastMat) {
+    lastMat = matOff;
+    info("BE-Matica: Textured trying material ItemInHandRenderer+%#x", matOff);
+  }
+  void *material = itemInHand + matOff;
   void *materialPtr = nullptr;
   if (!safeRead(material, &materialPtr, 8) || !materialPtr) return fail("held-block material not set");
   char *texture = atlasTexture(levelRenderer);
   if (!texture) return fail("atlas not available");
+  // Slot-0 texture: variant index 1 = the atlas object's two shared_ptrs (0x20 bytes) as they are. The game copies
+  // them (taking references) into its own list and releases that copy; this stack alias is never destroyed.
+  alignas(16) unsigned char slot0[0x28]{};
+  alignas(16) unsigned char extra[0x58]{};  // no second texture, like the game's own outline draws
+  if (!safeRead(levelRenderer + off::LevelRenderer_atlasTexture, slot0, 0x20)) return fail("atlas not readable");
+  const uint32_t variantIndex = 1;
+  std::memcpy(slot0 + 0x20, &variantIndex, 4);
+  auto render = [&] {
+    if (gRenderMeshTex) gRenderMeshTex(screenContext, tess, material, slot0, extra);
+    else gRenderMesh(screenContext, tess, material, texture);
+  };
   static bool stagesLogged = false;
   if (!stagesLogged) {
     stagesLogged = true;
@@ -281,6 +317,24 @@ bool draw(void *screenContext, void *tess, const char *levelRenderer, const char
   float *offset = reinterpret_cast<float *>(static_cast<char *>(tess) + off::Tessellator_postTransformOffset);
   float saved[3];
   std::memcpy(saved, offset, sizeof(saved));
+  // 1.26.60's appendTessellatedBlock sets the offset to -0.5 itself (0xaaada80 -> setOffset 0xac2c690), so blocks are
+  // placed with the tessellator's vertex matrix instead, which Tessellator::vertex applies before the offset.
+  char *matFlag = static_cast<char *>(tess) + off::Tessellator_useTransform;
+  float *matrix = reinterpret_cast<float *>(static_cast<char *>(tess) + off::Tessellator_transform);
+  char savedFlag = *matFlag;
+  float savedMatrix[16];
+  std::memcpy(savedMatrix, matrix, sizeof(savedMatrix));
+  static constexpr float kIdentity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  (void)kIdentity;
+  // Positions live in a std::vector<Vec3> at Tessellator+0x10 (Tessellator::vertex 0xac2ad74); whatever path the
+  // block's model takes, its new positions are moved into place there after appending.
+  auto positions = [&](float *&begin, size_t &count) {
+    char *b = nullptr, *e = nullptr;
+    std::memcpy(&b, static_cast<char *>(tess) + 0x10, 8);
+    std::memcpy(&e, static_cast<char *>(tess) + 0x18, 8);
+    begin = reinterpret_cast<float *>(b);
+    count = b && e > b ? static_cast<size_t>(e - b) / 12 : 0;
+  };
   size_t inBatch = 0, drawn = 0;
   uint64_t vertices = 0;
   for (const auto &b : blocks) {
@@ -291,17 +345,26 @@ bool draw(void *screenContext, void *tess, const char *levelRenderer, const char
     const void *block = blockFor(s.palette[b.palette].name);
     if (!block) continue;
     if (inBatch == 0) gBegin(tess, nullptr, QuadList, static_cast<int>(kBatch * 24), 0);
-    offset[0] = b.x - cam.x, offset[1] = b.y - cam.y, offset[2] = b.z - cam.z;
+    offset[0] = offset[1] = offset[2] = 0.0f;
+    float *pos = nullptr;
+    size_t before = 0, after = 0;
+    positions(pos, before);
     gAppend(blockTess, tess, block);
+    positions(pos, after);
+    // The model is centred by the game's own setOffset(-0.5) on most paths; corner it again, then place it.
+    const float tx = b.x - cam.x + 0.5f, ty = b.y - cam.y + 0.5f, tz = b.z - cam.z + 0.5f;
+    for (size_t i = before; i < after; ++i) pos[i * 3] += tx, pos[i * 3 + 1] += ty, pos[i * 3 + 2] += tz;
     vertices += 24;
     ++drawn;
     if (++inBatch == kBatch) {
-      gRenderMesh(screenContext, tess, material, texture);
+      render();
       inBatch = 0;
     }
   }
-  if (inBatch) gRenderMesh(screenContext, tess, material, texture);
+  if (inBatch) render();
   std::memcpy(offset, saved, sizeof(saved));
+  std::memcpy(matrix, savedMatrix, sizeof(savedMatrix));
+  *matFlag = savedFlag;
 
   static unsigned frames = 0;
   if (drawn > 0 && (frames++ % 600) == 0) {

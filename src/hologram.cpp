@@ -592,7 +592,11 @@ void updateLook(const char *levelRenderer, bool aimed, int32_t hitType, const Bl
   listener(info);
 }
 
+std::atomic<int64_t> gLastLevelFrameMs{0};
+
 void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject) {
+  gLastLevelFrameMs.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch()).count(), std::memory_order_relaxed);
   // The game can enter the detour before hook() has stored the original on the install thread.
   RenderLevelFn orig;
   while (!(orig = gRenderLevelOrig.load(std::memory_order_acquire))) std::this_thread::yield();
@@ -689,7 +693,7 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
       std::lock_guard lock(gMu);
       structure = gStructure;
     }
-    if (tintColor) tintColor[3] = gAlpha.load(std::memory_order_relaxed);  // see-through real blocks
+    // TEMPORARY: full opacity while the material experiment runs, so a working material cannot hide behind alpha.
     if (structure) drewTextured = textured::draw(screenContext, tess, static_cast<const char *>(self), lrp, mesh->blocks, *structure, cam);
     if (tintColor) tintColor[3] = 1.0f;
   }
@@ -858,6 +862,11 @@ void setLookListener(std::function<void(const LookInfo &)> listener) {
 void checkPlaced(int x, int y, int z) {
   std::lock_guard lock(gMu);
   gPending.push_back(packWorld(x, y, z));
+}
+
+bool inWorld() {
+  const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  return now - gLastLevelFrameMs.load(std::memory_order_relaxed) < 500;
 }
 
 }  // namespace bematica::hologram

@@ -65,4 +65,7 @@ struct Snapshot {
 };
 Snapshot snapshot();
 
+// True while the game is drawing a world (the RenderLevel hook ran in the last half second); false on menus.
+bool inWorld();
+
 }  // namespace bematica::hologram

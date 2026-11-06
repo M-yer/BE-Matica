@@ -274,3 +274,8 @@ int main(int argc, char **argv) {
   std::fflush(nullptr);
   std::_Exit(0);  // the panel's detached timer threads would otherwise outlive main
 }
+
+// The real one lives in hologram.cpp (RenderLevel hook); the preview is always "in a world".
+namespace bematica::hologram {
+bool inWorld() { return true; }
+}  // namespace bematica::hologram

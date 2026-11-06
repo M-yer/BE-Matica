@@ -2,6 +2,7 @@
 #include "materials_panel.hpp"
 
 #include "blockmap.hpp"
+#include "hologram.hpp"
 #include "icons.hpp"
 #include "itemmap.hpp"
 #include "skin.hpp"
@@ -185,6 +186,8 @@ bool MaterialsPanel::onTouch(const pl::input::TouchEvent &e) {
     std::lock_guard lock(mu_);
     const int action = e.action & 0xff;
     if (activePointer_ < 0) {
+      // On menus the panel is not drawn, so it must not take taps (it swallowed the worlds list's "build test" row).
+      if (!hologram::inWorld()) return false;
       const bool onButton = onButtonLocked(e.x, e.y);
       if ((action == kDown || action == kPointerDown) && (onButton || insideLocked(e.x, e.y))) {
         activePointer_ = e.pointerId;
