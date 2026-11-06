@@ -40,14 +40,24 @@ public:
   bool open(const std::string &archivePath, std::string &error) { return open(std::vector<std::string>{archivePath}, error); }
   bool open(const std::vector<std::string> &archivePaths, std::string &error);
   bool read(const std::string &relPath, std::vector<uint8_t> &out, std::string &error) const;
+  // Every pack layer's copy of `relPath`, oldest first, for files the game merges (blocks.json, terrain_texture.json).
+  std::vector<std::vector<uint8_t>> readLayers(const std::string &relPath) const;
 
 private:
   struct Part {
     std::unique_ptr<ZipArchive> zip;
-    std::string root;
+    // Newest first. The game stacks vanilla_<version>/ packs (1.14 ... 1.26.50) over vanilla/, newer ones winning.
+    std::vector<std::string> roots;
   };
+  bool readAt(size_t part, const std::string &root, const std::string &relPath, std::vector<uint8_t> &out) const;
   std::vector<Part> parts_;
+  mutable std::unordered_map<std::string, std::vector<uint8_t>> bundles_;  // "part:bundle path" -> its bytes (empty: none)
 };
+
+// Newer games (1.26+) keep each pack folder's files in one "__brarchive/<folder>.brarchive": a 16-byte header (magic,
+// count, version), `count` 256-byte entries (name length, name, then data offset and size as the last 8 bytes), then
+// the data. Copies `name` out of such a bundle.
+bool readBrArchive(const std::vector<uint8_t> &bundle, std::string_view name, std::vector<uint8_t> &out);
 
 // Changes whenever the archive is replaced (game update): file name, size, modification time.
 std::string archiveStamp(const std::string &archivePath);

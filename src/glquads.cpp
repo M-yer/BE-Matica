@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <cstring>
 #include <strings.h>
+#include <set>
+#include <string>
 #include <vector>
 
 #ifdef __ANDROID__
@@ -258,7 +260,10 @@ GLint viewProjLocation(GLuint program, bool log) {
     GLenum type = 0;
     glGetActiveUniform(program, static_cast<GLuint>(i), sizeof(name) - 1, &len, &size, &type, name);
     if (log) info("BE-Matica: Atlas GL program %u uniform %d: %s (type %#x, size %d)", program, i, name, type, size);
-    if (type == GL_FLOAT_MAT4 && strcasestr(name, "WORLDVIEWPROJ")) found = glGetUniformLocation(program, name);
+    // Older games name it WORLDVIEWPROJ; RenderDragon (1.26) shaders use bgfx's u_viewProj (camera-relative too).
+    if (type == GL_FLOAT_MAT4 && (strcasestr(name, "WORLDVIEWPROJ") ||
+                                  (strcasestr(name, "viewproj") && !strcasestr(name, "model") && !strcasestr(name, "inv"))))
+      found = glGetUniformLocation(program, name);
   }
   return found;
 }
@@ -284,6 +289,25 @@ void snapshotViewProjections() {
       if (!linked) continue;
       const GLint loc = viewProjLocation(id, false);
       if (loc >= 0) gCandidates.push_back({id, loc, {}});
+    }
+    static bool listed = false;
+    if (gCandidates.empty() && !listed) {  // say what the game's shaders do have, once
+      listed = true;
+      std::set<std::string> names;
+      for (GLuint id = 1; id < 2048 && names.size() < 40; ++id) {
+        if (!glIsProgram(id)) continue;
+        GLint count = 0;
+        glGetProgramiv(id, GL_ACTIVE_UNIFORMS, &count);
+        for (GLint i = 0; i < count; ++i) {
+          char name[128]{};
+          GLsizei len = 0;
+          GLint size = 0;
+          GLenum type = 0;
+          glGetActiveUniform(id, static_cast<GLuint>(i), sizeof(name) - 1, &len, &size, &type, name);
+          if (type == GL_FLOAT_MAT4) names.insert(name);
+        }
+      }
+      for (const std::string &n : names) info("BE-Matica: Atlas GL game mat4 uniform: %s", n.c_str());
     }
   }
   for (Candidate &c : gCandidates) glGetUniformfv(c.program, c.location, c.before);

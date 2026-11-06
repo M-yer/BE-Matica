@@ -21,7 +21,7 @@ constexpr int kAtlasWidth = 1024;
 constexpr int kMaxAtlasHeight = 4096;
 constexpr int kPad = 1;  // edge pixels repeated around each tile so filtering and mip levels do not bleed neighbours
 constexpr uint32_t kCacheMagic = 0x54414D42;  // "BMAT"
-constexpr uint32_t kCacheFormat = 2;
+constexpr uint32_t kCacheFormat = 3;  // 3: pack layers + __brarchive bundles (1.26 games)
 
 constexpr uint32_t kGrass = 0x79C05A, kFoliage = 0x79C05A, kSpruce = 0x619961, kBirch = 0x80A755, kWater = 0x44AFF5;
 
@@ -315,7 +315,27 @@ bool ResourcePack::open(const std::vector<std::string> &archivePaths, std::strin
     }
     if (best.empty()) continue;
     haveTerrain = haveTerrain || terrain;
-    part.root = best;
+    part.roots = {best};
+    if (endsWith(best, "resource_packs/vanilla/")) {
+      // The versioned packs next to vanilla/: "vanilla_1.21.110/" -> {1, 21, 110}.
+      const std::string prefix = best.substr(0, best.size() - 8) + "vanilla_";
+      std::map<std::vector<int>, std::string> layers;
+      for (const auto &kv : part.zip->entries()) {
+        const std::string &n = kv.first;
+        if (n.compare(0, prefix.size(), prefix) != 0) continue;
+        const size_t end = n.find('/', prefix.size());
+        if (end == std::string::npos) continue;
+        std::vector<int> version{0};
+        bool ok = end > prefix.size();
+        for (size_t i = prefix.size(); ok && i < end; ++i) {
+          if (n[i] == '.') version.push_back(0);
+          else if (std::isdigit(static_cast<unsigned char>(n[i]))) version.back() = version.back() * 10 + (n[i] - '0');
+          else ok = false;
+        }
+        if (ok) layers.emplace(version, n.substr(0, end + 1));
+      }
+      for (const auto &[version, root] : layers) part.roots.insert(part.roots.begin(), root);
+    }
     parts_.push_back(std::move(part));
   }
   if (!haveTerrain) {
@@ -327,11 +347,57 @@ bool ResourcePack::open(const std::vector<std::string> &archivePaths, std::strin
   return true;
 }
 
+bool readBrArchive(const std::vector<uint8_t> &b, std::string_view name, std::vector<uint8_t> &out) {
+  static constexpr uint8_t kMagic[8] = {0x7d, 0x27, 0x25, 0xb1, 0xa0, 0x52, 0x70, 0x26};
+  if (b.size() < 16 || std::memcmp(b.data(), kMagic, 8) != 0) return false;
+  uint32_t count = 0;
+  std::memcpy(&count, b.data() + 8, 4);
+  const uint64_t base = 16 + uint64_t{count} * 256;
+  if (base > b.size()) return false;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint8_t *e = b.data() + 16 + uint64_t{i} * 256;
+    if (e[0] > 247 || std::string_view(reinterpret_cast<const char *>(e + 1), e[0]) != name) continue;
+    uint32_t off = 0, size = 0;
+    std::memcpy(&off, e + 248, 4);
+    std::memcpy(&size, e + 252, 4);
+    if (base + off + size > b.size()) return false;
+    out.assign(b.begin() + static_cast<std::ptrdiff_t>(base + off), b.begin() + static_cast<std::ptrdiff_t>(base + off + size));
+    return true;
+  }
+  return false;
+}
+
+// The file as a loose zip entry, or else from the folder's __brarchive bundle.
+bool ResourcePack::readAt(size_t part, const std::string &root, const std::string &relPath, std::vector<uint8_t> &out) const {
+  const ZipArchive &zip = *parts_[part].zip;
+  std::string ignored;
+  if (zip.entries().count(root + relPath)) return zip.read(root + relPath, out, 64u << 20, ignored);
+  const size_t slash = relPath.rfind('/');
+  if (slash == std::string::npos) return false;
+  const std::string bundle = root + "__brarchive/" + relPath.substr(0, slash) + ".brarchive";
+  auto it = bundles_.find(std::to_string(part) + ":" + bundle);
+  if (it == bundles_.end()) {
+    std::vector<uint8_t> raw;
+    if (!zip.entries().count(bundle) || !zip.read(bundle, raw, 256u << 20, ignored)) raw.clear();
+    it = bundles_.emplace(std::to_string(part) + ":" + bundle, std::move(raw)).first;
+  }
+  return readBrArchive(it->second, relPath.substr(slash + 1), out);
+}
+
 bool ResourcePack::read(const std::string &relPath, std::vector<uint8_t> &out, std::string &error) const {
-  for (const Part &p : parts_)
-    if (p.zip->entries().count(p.root + relPath)) return p.zip->read(p.root + relPath, out, 64u << 20, error);
+  for (size_t i = 0; i < parts_.size(); ++i)
+    for (const std::string &root : parts_[i].roots)
+      if (readAt(i, root, relPath, out)) return true;
   error = "no such entry: " + relPath;
   return false;
+}
+
+std::vector<std::vector<uint8_t>> ResourcePack::readLayers(const std::string &relPath) const {
+  std::vector<std::vector<uint8_t>> out;
+  for (size_t i = 0; i < parts_.size(); ++i)
+    for (auto root = parts_[i].roots.rbegin(); root != parts_[i].roots.rend(); ++root)
+      if (std::vector<uint8_t> raw; readAt(i, *root, relPath, raw)) out.push_back(std::move(raw));
+  return out;
 }
 
 std::string archiveStamp(const std::string &archivePath) {
@@ -348,10 +414,19 @@ std::string archiveStamp(const std::vector<std::string> &archivePaths) {
 }
 
 bool buildAtlas(const ResourcePack &pack, const std::string &stamp, TextureAtlas &out, std::string &error) {
-  std::vector<uint8_t> raw;
-  if (!pack.read("textures/terrain_texture.json", raw, error)) return false;
-  const Json terrain = parseLoose(raw);
-  if (!terrain.is_object() || !terrain.contains("texture_data") || !terrain["texture_data"].is_object()) {
+  // Each pack layer adds or replaces entries; later (newer) layers win, as in the game.
+  Json terrain = Json::object(), blocks = Json::object();
+  for (const auto &raw : pack.readLayers("textures/terrain_texture.json")) {
+    const Json layer = parseLoose(raw);
+    if (layer.is_object() && layer.contains("texture_data") && layer["texture_data"].is_object())
+      for (const auto &kv : layer["texture_data"].items()) terrain["texture_data"][kv.key()] = kv.value();
+  }
+  for (const auto &raw : pack.readLayers("blocks.json")) {
+    const Json layer = parseLoose(raw);
+    if (layer.is_object())
+      for (const auto &kv : layer.items()) blocks[kv.key()] = kv.value();
+  }
+  if (!terrain.contains("texture_data")) {
     error = "terrain_texture.json is not readable";
     return false;
   }
@@ -377,9 +452,7 @@ bool buildAtlas(const ResourcePack &pack, const std::string &stamp, TextureAtlas
   for (const auto &[key, images] : keyImages)
     for (int i : images) out.tiles[key].push_back(builder.tile(i));
 
-  if (!pack.read("blocks.json", raw, error)) return false;
-  const Json blocks = parseLoose(raw);
-  if (!blocks.is_object()) {
+  if (blocks.empty()) {
     error = "blocks.json is not readable";
     return false;
   }
