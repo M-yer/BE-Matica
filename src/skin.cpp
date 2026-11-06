@@ -148,18 +148,20 @@ void load() {
   std::string error;
   const std::vector<std::string> apks = gameArchiveCandidates();
   const bool havePack = pack.open(apks, error);
+  // Mojangles.ttf first: in 1.26 games default8.png still exists (inside font.brarchive) but no longer is a plain
+  // 16x16 grid of 8x8 glyphs, so it draws garbage. The sheets are for older games that have no Mojangles.ttf.
   bool font = false;
+  if (Image sheet; fontFromTtf(apks, sheet) && buildFont(std::move(sheet), gFont)) {
+    info("BE-Matica: Skin font %s", "Mojangles.ttf");
+    font = true;
+  }
   for (const char *path : kFonts) {
     Image sheet;
+    if (font) break;
     if (havePack && readImage(pack, path, sheet) && buildFont(std::move(sheet), gFont)) {
       info("BE-Matica: Skin font %s", path);
       font = true;
-      break;
     }
-  }
-  if (Image sheet; !font && fontFromTtf(apks, sheet) && buildFont(std::move(sheet), gFont)) {
-    info("BE-Matica: Skin font %s", "Mojangles.ttf");
-    font = true;
   }
   if (!font) {
     info("BE-Matica: Skin unavailable: no font (%s)", havePack ? "no font sheet or Mojangles.ttf" : error.c_str());
