@@ -12,7 +12,10 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdarg>
 #include <chrono>
 #include <map>
@@ -24,8 +27,8 @@
 #include <unordered_map>
 #include <vector>
 
-// Positioning: no world MatrixStack was found, so a cached mesh cannot be placed. Instead the game's own block model
-// is tessellated every frame with the camera-relative offset, but only for the nearest few blocks (bounded cost).
+// Positioning: retained section meshes placed by translating the world matrix (drawCached). If its helpers are not
+// found, the game's own block model is tessellated every frame camera-relative for the nearest few blocks instead.
 // Everything the game owns (ClientInstance, BlockTessellator, materials, atlas) is read through fault-safe reads;
 // any failure makes draw() return false and the caller keeps drawing boxes.
 namespace bematica::textured {
@@ -53,6 +56,30 @@ BlockRegistryFn gRegistry = nullptr;
 BlockLookupFn gLookup = nullptr;
 using TextureWrapFn = void (*)(void *holder, uint64_t a, uint64_t b, const void *variant);
 TextureWrapFn gWrap = nullptr;
+
+// Retained meshes (the LHolo approach, studied from its 26.60 Android build; own code): each 16^3 section of the
+// hologram is tessellated once into a game mce::Mesh with section-relative positions. Each frame the top of the world
+// matrix stack (ScreenContext+0x18) is translated to the section, the mesh drawn, and the matrix put back.
+// The functions are the ones the slot-0 renderMeshImmediately (26.60.4 0xb76a204) itself calls, read from its BLs.
+struct alignas(16) MeshBuf {
+  unsigned char bytes[0x280];
+};
+using TessBusyFn = bool (*)(void *tess);
+using TessEndFn = MeshBuf (*)(void *tess, int mode, const char *name, int nameLen, int flag);  // Mesh returned via x8
+using MeshRenderFn = void (*)(void *mesh, void *screenContextPlus10, void *material, const void *texture0, int start, int count,
+                              void *extra, void *unused);
+using MeshDtorFn = void (*)(void *mesh);
+using TessClearFn = void (*)(void *tess);
+TessBusyFn gTessBusy = nullptr;
+TessEndFn gTessEnd = nullptr;
+MeshRenderFn gMeshRender = nullptr;
+MeshDtorFn gMeshDtor = nullptr;
+TessClearFn gTessClear = nullptr;
+
+constexpr int kSection = 16;
+constexpr float kCachedRadius = 96.0f;     // section centres farther than this are not drawn
+constexpr size_t kBuildsPerFrame = 2;      // sections tessellated per frame (the rest wait for the next frames)
+constexpr unsigned ScreenContext_worldMatrixStack = 0x18;  // MatrixStack*: std::deque<Matrix> map +0x50, start +0x68, size +0x70
 
 uintptr_t untag(const void *p) { return reinterpret_cast<uintptr_t>(p) & 0x00FFFFFFFFFFFFFFULL; }
 
@@ -177,6 +204,146 @@ void prepareAtlas(std::filesystem::path cacheDir) {
   info("BE-Matica: Atlas unavailable: no readable game apk among %zu candidate(s)", apks.size());
 }
 
+struct Section {
+  std::array<int, 3> origin{};
+  std::vector<BlockCell> cells;
+  uint64_t hash = 0;       // contents the mesh was built from
+  uint64_t wantHash = 0;   // contents now
+  MeshBuf *mesh = nullptr; // null: not built yet, or nothing drawable in it
+  bool built = false;
+};
+std::map<std::array<int, 3>, Section> gSections;  // render thread only
+const void *gSectionsFor = nullptr;                // blocks vector + structure the sections were grouped from
+size_t gSectionsSize = 0;
+const Structure *gSectionsStructure = nullptr;
+
+void freeMesh(Section &sec) {
+  if (sec.mesh) {
+    gMeshDtor(sec.mesh);
+    delete sec.mesh;
+    sec.mesh = nullptr;
+  }
+}
+
+void regroup(const std::vector<BlockCell> &blocks, const Structure &s) {
+  if (gSectionsStructure != &s) {
+    for (auto &[k, sec] : gSections) freeMesh(sec);
+    gSections.clear();
+  }
+  gSectionsFor = blocks.data(), gSectionsSize = blocks.size(), gSectionsStructure = &s;
+  auto floorDiv = [](int v) { return v >= 0 ? v / kSection : -((-v + kSection - 1) / kSection); };
+  for (auto &[k, sec] : gSections) sec.cells.clear(), sec.wantHash = 0;
+  for (const BlockCell &b : blocks) {
+    const std::array<int, 3> key{floorDiv(b.x), floorDiv(b.y), floorDiv(b.z)};
+    Section &sec = gSections[key];
+    sec.origin = {key[0] * kSection, key[1] * kSection, key[2] * kSection};
+    sec.cells.push_back(b);
+    uint64_t h = sec.wantHash ^ 0xcbf29ce484222325ULL;
+    for (int v : {b.x, b.y, b.z, static_cast<int>(b.palette)}) h = (h ^ static_cast<uint32_t>(v)) * 0x100000001b3ULL;
+    sec.wantHash = h;
+  }
+  for (auto it = gSections.begin(); it != gSections.end();) {
+    if (it->second.cells.empty()) {
+      freeMesh(it->second);
+      it = gSections.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+// Tessellates one section into a retained mesh with positions relative to the section origin.
+void buildSection(Section &sec, void *tess, char *blockTess, const Structure &s) {
+  freeMesh(sec);
+  sec.built = true;
+  sec.hash = sec.wantHash;
+  gBegin(tess, nullptr, QuadList, static_cast<int>(sec.cells.size() * 24), 0);
+  float *offset = reinterpret_cast<float *>(static_cast<char *>(tess) + off::Tessellator_postTransformOffset);
+  size_t appended = 0;
+  for (const BlockCell &b : sec.cells) {
+    if (b.palette < 0 || static_cast<size_t>(b.palette) >= s.palette.size()) continue;
+    const void *block = blockFor(s.palette[b.palette].name);
+    if (!block) continue;
+    offset[0] = offset[1] = offset[2] = 0.0f;
+    char *pb = nullptr, *pe = nullptr;
+    std::memcpy(&pb, static_cast<char *>(tess) + 0x10, 8);
+    std::memcpy(&pe, static_cast<char *>(tess) + 0x18, 8);
+    const size_t before = pb && pe > pb ? static_cast<size_t>(pe - pb) / 12 : 0;
+    gAppend(blockTess, tess, block);
+    std::memcpy(&pb, static_cast<char *>(tess) + 0x10, 8);
+    std::memcpy(&pe, static_cast<char *>(tess) + 0x18, 8);
+    const size_t after = pb && pe > pb ? static_cast<size_t>(pe - pb) / 12 : 0;
+    float *pos = reinterpret_cast<float *>(pb);
+    // appendTessellatedBlock centres the model with setOffset(-0.5); corner it again, then place it in the section.
+    const float tx = b.x - sec.origin[0] + 0.5f, ty = b.y - sec.origin[1] + 0.5f, tz = b.z - sec.origin[2] + 0.5f;
+    for (size_t i = before; i < after; ++i) pos[i * 3] += tx, pos[i * 3 + 1] += ty, pos[i * 3 + 2] += tz;
+    if (after > before) ++appended;
+  }
+  if (appended > 0) {
+    static constexpr char kName[] = "BE-Matica";
+    sec.mesh = new MeshBuf(gTessEnd(tess, 0, kName, static_cast<int>(sizeof(kName) - 1), 1));
+  }
+  gTessClear(tess);
+}
+
+// Top of the world matrix stack (column-major mat4), or null.
+float *worldMatrix(void *screenContext) {
+  const char *stack = nullptr, *map = nullptr, *block = nullptr;
+  if (!readPtr(screenContext, ScreenContext_worldMatrixStack, stack)) return nullptr;
+  uint64_t start = 0, size = 0;
+  if (!readPtr(stack, 0x50, map) || !safeRead(stack + 0x68, &start, 8) || !safeRead(stack + 0x70, &size, 8)) return nullptr;
+  if (size == 0 || size > 1024) return nullptr;
+  const uint64_t top = start + size - 1;
+  if (!readPtr(map, static_cast<unsigned>((top / 64) * 8), block)) return nullptr;
+  float *m = reinterpret_cast<float *>(const_cast<char *>(block) + (top % 64) * 64);
+  float probe[16];
+  if (!safeRead(m, probe, sizeof(probe))) return nullptr;
+  for (float f : probe)
+    if (!std::isfinite(f)) return nullptr;
+  return m;
+}
+
+// False when the cached path cannot run this frame (caller uses the near-camera path).
+bool drawCached(void *screenContext, void *tess, char *blockTess, void *material, const void *slot0, void *extra,
+                const std::vector<BlockCell> &blocks, const Structure &s, const Vec3f &cam, size_t &drawnSections) {
+  drawnSections = 0;
+  if (!gTessEnd || !gRenderMeshTex) return false;
+  float *matrix = worldMatrix(screenContext);
+  if (!matrix) return false;
+  if (blocks.data() != gSectionsFor || blocks.size() != gSectionsSize || &s != gSectionsStructure) regroup(blocks, s);
+
+  // Build the nearest stale sections first, a few per frame.
+  if (!gTessBusy(tess)) {
+    std::vector<std::pair<float, Section *>> stale;
+    for (auto &[k, sec] : gSections) {
+      if (sec.built && sec.hash == sec.wantHash) continue;
+      const float dx = sec.origin[0] + 8 - cam.x, dy = sec.origin[1] + 8 - cam.y, dz = sec.origin[2] + 8 - cam.z;
+      stale.emplace_back(dx * dx + dy * dy + dz * dz, &sec);
+    }
+    const size_t n = std::min(kBuildsPerFrame, stale.size());
+    std::partial_sort(stale.begin(), stale.begin() + n, stale.end(), [](auto &a, auto &b) { return a.first < b.first; });
+    float *offset = reinterpret_cast<float *>(static_cast<char *>(tess) + off::Tessellator_postTransformOffset);
+    float savedOffset[3];
+    std::memcpy(savedOffset, offset, sizeof(savedOffset));
+    for (size_t i = 0; i < n; ++i) buildSection(*stale[i].second, tess, blockTess, s);
+    std::memcpy(offset, savedOffset, sizeof(savedOffset));
+  }
+
+  float saved[16];
+  std::memcpy(saved, matrix, sizeof(saved));
+  for (auto &[k, sec] : gSections) {
+    if (!sec.mesh) continue;
+    const float dx = sec.origin[0] - cam.x, dy = sec.origin[1] - cam.y, dz = sec.origin[2] - cam.z;
+    const float cx = dx + 8, cy = dy + 8, cz = dz + 8;
+    if (cx * cx + cy * cy + cz * cz > kCachedRadius * kCachedRadius) continue;
+    for (int r = 0; r < 4; ++r) matrix[12 + r] = saved[12 + r] + dx * saved[r] + dy * saved[4 + r] + dz * saved[8 + r];
+    gMeshRender(sec.mesh, static_cast<char *>(screenContext) + 0x10, material, slot0, 0, 0, extra, nullptr);
+    ++drawnSections;
+  }
+  std::memcpy(matrix, saved, sizeof(saved));
+  return true;
+}
+
 }  // namespace
 
 void setCacheDir(const std::filesystem::path &dir) { gCacheDir = dir; }
@@ -251,6 +418,24 @@ void install(pl::log::Logger &log) {
       gRenderMeshTex = reinterpret_cast<RenderMeshTexFn>(const_cast<char *>(cand));
     log.info("BE-Matica: Textured slot-0 renderMeshImmediately {}", gRenderMeshTex ? "found" : "NOT found (blocks draw untextured)");
   }
+  if (gRenderMeshTex) {
+    // BL targets inside it (26.60.4: busy check, Tessellator::end, mesh render with slot 0, ~Mesh, tessellator clear).
+    auto blAt = [](unsigned offset) -> void * {
+      const char *pc = reinterpret_cast<const char *>(gRenderMeshTex) + offset;
+      uint32_t insn = 0;
+      if (!safeRead(pc, &insn, 4) || (insn & 0xFC000000u) != 0x94000000u) return nullptr;
+      const int64_t imm = static_cast<int64_t>(static_cast<int32_t>(insn << 6) >> 6) * 4;
+      return const_cast<char *>(pc + imm);
+    };
+    gTessBusy = reinterpret_cast<TessBusyFn>(blAt(0x40));
+    gTessEnd = reinterpret_cast<TessEndFn>(blAt(0x68));
+    gMeshRender = reinterpret_cast<MeshRenderFn>(blAt(0x8c));
+    gMeshDtor = reinterpret_cast<MeshDtorFn>(blAt(0x94));
+    gTessClear = reinterpret_cast<TessClearFn>(blAt(0x9c));
+    const bool all = gTessBusy && gTessEnd && gMeshRender && gMeshDtor && gTessClear;
+    if (!all) gTessBusy = nullptr, gTessEnd = nullptr, gMeshRender = nullptr, gMeshDtor = nullptr, gTessClear = nullptr;
+    log.info("BE-Matica: Textured cached meshes {}", all ? "available" : "unavailable (drawing near the camera only)");
+  }
   gReady = true;
   log.info("BE-Matica: Textured ready (all signatures resolved)");
 }
@@ -279,17 +464,8 @@ bool draw(void *screenContext, void *tess, const char *levelRenderer, const char
   if (!readPtr(levelRenderer, off::LevelRenderer_clientInstance, clientInstance)) return fail("no ClientInstance");
   if (!readPtr(clientInstance, off::ClientInstance_blockTessellator, blockTess)) return fail("no BlockTessellator");
   if (!readPtr(clientInstance, off::ClientInstance_itemInHandRenderer, itemInHand)) return fail("no ItemInHandRenderer");
-  // TEMPORARY device experiment: which held-block material shows the block models on 1.26.60. Each is tried for 5 s.
-  static constexpr unsigned kMats[] = {off::ItemInHandRenderer_matAlphaColoredBlock, off::ItemInHandRenderer_matBlendBlock,
-                                       off::ItemInHandRenderer_matOpaqueBlockColor, off::ItemInHandRenderer_matAlphaOneSidedColoredBlock};
-  const auto secs = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-  const unsigned matOff = kMats[(secs / 5) % std::size(kMats)];
-  static unsigned lastMat = 0;
-  if (matOff != lastMat) {
-    lastMat = matOff;
-    info("BE-Matica: Textured trying material ItemInHandRenderer+%#x", matOff);
-  }
-  void *material = itemInHand + matOff;
+  // entity_alphablend: textured on 1.26.60 (device 2026-11-06) and honours the ghost alpha set in the shader colour.
+  void *material = itemInHand + off::ItemInHandRenderer_matBlendBlock;
   void *materialPtr = nullptr;
   if (!safeRead(material, &materialPtr, 8) || !materialPtr) return fail("held-block material not set");
   char *texture = atlasTexture(levelRenderer);
@@ -314,6 +490,22 @@ bool draw(void *screenContext, void *tess, const char *levelRenderer, const char
   failedLogged = false;
 
   const auto t0 = std::chrono::steady_clock::now();
+  size_t sections = 0;
+  const bool cached = drawCached(screenContext, tess, blockTess, material, slot0, extra, blocks, s, cam, sections);
+  static int lastCached = -1;
+  if (static_cast<int>(cached) != lastCached) {
+    lastCached = cached;
+    info("BE-Matica: Textured path: %s", cached ? "cached section meshes" : "near-camera blocks every frame");
+  }
+  if (cached) {
+    static unsigned frames = 0;
+    if ((frames++ % 600) == 0) {
+      const auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+      info("BE-Matica: Textured cached draw %zu of %zu sections within %.0f blocks in %lld us", sections, gSections.size(),
+           kCachedRadius, static_cast<long long>(us));
+    }
+    return true;
+  }
   float *offset = reinterpret_cast<float *>(static_cast<char *>(tess) + off::Tessellator_postTransformOffset);
   float saved[3];
   std::memcpy(saved, offset, sizeof(saved));
