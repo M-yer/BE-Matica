@@ -15,6 +15,8 @@ namespace bematica::skin {
 // Safe to call again; it does nothing once it has succeeded.
 void load();
 bool available();
+// The player's choice between this Minecraft look and the flat one; available() is false while it is off.
+void setEnabled(bool on);
 
 // The integer font scale whose line height is closest to `fontPx`, and the border scale that goes with it.
 int textScale(float fontPx);

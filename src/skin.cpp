@@ -179,7 +179,10 @@ void load() {
   if (all) gReady = true;
 }
 
-bool available() { return gReady; }
+std::atomic<bool> gEnabled{true};
+
+void setEnabled(bool on) { gEnabled = on; }
+bool available() { return gReady && gEnabled; }
 
 // A glyph is 7 of its 8 pixels tall, against about 0.7 em of cap height in the launcher's font; a scale a little under
 // that keeps labels from outgrowing the buttons they were laid out for.

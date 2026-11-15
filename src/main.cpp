@@ -6,6 +6,7 @@
 #include "library.hpp"
 #include "litematic.hpp"
 #include "materials_panel.hpp"
+#include "skin.hpp"
 #include "waila.hpp"
 
 #include <pl/Input.hpp>
@@ -119,6 +120,7 @@ public:
     hologram::setVisible(hologramOn_);
     textured::setCacheDir(structuresDir_.parent_path() / "texture_cache");
     textured::setEnabled(texturedOn_);
+    skin::setEnabled(mcStyleOn_);
     applyLookLocked();
     easyplace::setEnabled(easyPlaceOn_);
     hologram::setOriginListener([this](std::array<int, 3> origin) {
@@ -214,6 +216,12 @@ private:
     } else if (key == "refresh") {
       scanLocked();
       status_ = files_.empty() ? "No structures yet" : std::to_string(files_.size()) + " structures found";
+    } else if (key == "mcstyle") {
+      mcStyleOn_ = value == "true" || value == "1";
+      skin::setEnabled(mcStyleOn_);
+      panel_.restyle();
+      saveSettingsLocked();
+      return;
     } else if (key == "textured") {
       texturedOn_ = value == "true" || value == "1";
       textured::setEnabled(texturedOn_);
@@ -638,12 +646,16 @@ private:
     if (files_.empty()) file.description = "Import a structure to get started.";
     schema.node(std::move(file));
 
+    schema.node(N{.id = "mcstyle", .key = "mcstyle", .category = "main", .title = "Minecraft-style panel",
+                  .description = "On: the panel uses the game's font, buttons and grey boxes. Off: the flat dark panel.",
+                  .type = T::Toggle, .defaultValue = "true", .currentValue = mcStyleOn_ ? "true" : "false",
+                  .hasCurrentValue = true});
     if (hologramOk_) {
       schema.node(N{.id = "hologram", .key = "hologram", .category = "main", .title = "Show hologram",
                     .type = T::Toggle, .defaultValue = "true", .currentValue = hologramOn_ ? "true" : "false",
                     .hasCurrentValue = true});
       schema.node(N{.id = "textured", .key = "textured", .category = "main", .title = "Real block textures (experimental)",
-                    .description = "Draw the ghost blocks near you (about 8 blocks) with the game's own models and "
+                    .description = "Draw the ghost blocks (up to 96 blocks away) with the game's own models and "
                                    "textures. Turn off if anything looks wrong.",
                     .type = T::Toggle, .defaultValue = "false", .currentValue = texturedOn_ ? "true" : "false",
                     .hasCurrentValue = true});
@@ -755,6 +767,7 @@ private:
       else if (key == "autoselect") autoSelectOn_ = value == "1";
       else if (key == "hologram") hologramOn_ = value == "1";
       else if (key == "textured") texturedOn_ = value == "1";
+      else if (key == "mcstyle") mcStyleOn_ = value == "1";
       else if (key == "outlines") outlinesOn_ = value == "1";
       else if (key == "fill") fillOn_ = value == "1";
       else if (key == "opacity") opacity_ = std::clamp(std::atoi(value.c_str()), 10, 100);
@@ -780,7 +793,7 @@ private:
   }
 
   void saveSettingsLocked() {
-    std::ofstream(settingsFile()) << "easyplace=" << easyPlaceOn_ << "\nairplace=" << airPlaceOn_ << "\nautoselect=" << autoSelectOn_ << "\nhologram=" << hologramOn_ << "\ntextured=" << texturedOn_
+    std::ofstream(settingsFile()) << "easyplace=" << easyPlaceOn_ << "\nairplace=" << airPlaceOn_ << "\nautoselect=" << autoSelectOn_ << "\nhologram=" << hologramOn_ << "\ntextured=" << texturedOn_ << "\nmcstyle=" << mcStyleOn_
                                   << "\noutlines=" << outlinesOn_ << "\nfill=" << fillOn_ << "\nopacity=" << opacity_ << "\n"
                                   << "structure=" << loadedName_ << "\norigin=" << origin_[0] << ',' << origin_[1] << ','
                                   << origin_[2] << "\nrotation=" << view_.rotation << "\nmirror=" << view_.mirror
@@ -812,7 +825,7 @@ private:
   LookCard waila_;
   bool lookOn_ = true;
   std::string helpLang_ = "auto";  // auto | en | es | pt
-  bool hologramOk_ = false, hologramOn_ = true, texturedOn_ = false, outlinesOn_ = true, fillOn_ = true;
+  bool hologramOk_ = false, hologramOn_ = true, texturedOn_ = false, mcStyleOn_ = true, outlinesOn_ = true, fillOn_ = true;
   bool easyPlaceOk_ = false, easyPlaceOn_ = false, airPlaceOn_ = true, autoSelectOn_ = true;
   int opacity_ = 45;
   View view_;

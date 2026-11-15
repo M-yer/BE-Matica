@@ -33,6 +33,7 @@ public:
   void setLayer(int layer, int layerCount, bool single);
   void setState(bool hologram, bool easyPlace, bool mirror, bool locked);
   void setProgress(size_t built, size_t total);
+  void restyle();  // after the Minecraft / flat look changes
 
 private:
   bool onTouch(const pl::input::TouchEvent &e);

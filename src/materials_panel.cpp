@@ -165,6 +165,11 @@ void MaterialsPanel::setState(bool hologram, bool easyPlace, bool mirror, bool l
   redrawLocked();
 }
 
+void MaterialsPanel::restyle() {
+  std::lock_guard lock(mu_);
+  redrawLocked();
+}
+
 void MaterialsPanel::setProgress(size_t built, size_t total) {
   std::lock_guard lock(mu_);
   if (built == built_ && total == total_) return;
