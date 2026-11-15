@@ -68,6 +68,18 @@ BlockStateByNameFn gStateByName = nullptr;
 std::atomic_bool gEnabled{false};
 std::atomic_bool gAirPlace{true};
 std::atomic_bool gAutoSelect{true};
+std::atomic_bool gPrinter{false}, gPrinterServers{false};
+std::atomic_bool gPasteWanted{false};
+std::atomic<int64_t> gServerSeenMs{0};  // last tick of a ServerPlayer in this process: the world is local
+
+int64_t nowMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+// Singleplayer (or a world this device hosts) runs its server in-process; on a remote server it never ticks here.
+bool localWorld() { return nowMs() - gServerSeenMs.load(std::memory_order_relaxed) < 2000; }
+bool printerActive() {
+  return gPrinter.load(std::memory_order_relaxed) && (localWorld() || gPrinterServers.load(std::memory_order_relaxed));
+}
 std::function<void(const std::string &)> gMessage;
 std::function<void()> gLayerDone;
 pl::log::Logger *gLog = nullptr;
@@ -228,6 +240,8 @@ char *hitResultOf(void *player) {
 // BlockType for a block name. Only touched on the game thread.
 const void *blockTypeOf(const std::string &name) {
   static std::unordered_map<std::string, const void *> cache;
+  static std::mutex mu;
+  std::lock_guard lock(mu);
   if (auto it = cache.find(name); it != cache.end()) return it->second;
   const HashedString hs(name);
   void *block = gLookup(gRegistry(), &hs);
@@ -925,8 +939,22 @@ const void *placementDetour(void *blockType, void *actor, const BlockPos *pos, u
   return gFacingCount.load(std::memory_order_acquire) > 0 ? applyFacing(result, actor, pos) : result;
 }
 
+void runPaste(void *serverPlayer);
+
+bool isServerPlayer(void *p) {
+  static thread_local void *known = nullptr;
+  if (p == known) return true;
+  if (className(p) != "ServerPlayer") return false;
+  known = p;
+  return true;
+}
+
 uint64_t serverTickDetour(void *self, void *a1, void *a2, void *a3) {
   const uint64_t result = gServerTickOrig.load(std::memory_order_acquire)(self, a1, a2, a3);
+  if (isServerPlayer(self)) {
+    gServerSeenMs.store(nowMs(), std::memory_order_relaxed);
+    runPaste(self);
+  }
   if (gMove.state.load(std::memory_order_acquire) == 1) runMoveJob(self);
   if (gOrientCount.load(std::memory_order_acquire) > 0) runOrientJobs(self);
   return result;
@@ -1191,6 +1219,31 @@ void dropFacing(const Cell &cell) {
 }
 
 // Posts the structure's states for the block just placed at `cell`. Doors are two blocks: the cell above is posted too.
+// The structure's states for `bs`, turned with the view, into `job`. True for the upper half of a door.
+bool fillWants(const BlockState &bs, const View &view, OrientJob &job) {
+  bool upper = false;
+  for (size_t i = 0; i < bs.states.items.size() && i < bs.states.keys.size(); ++i) {
+    const nbt::Tag &t = bs.states.items[i];
+    const std::string &key = bs.states.keys[i];
+    if (t.type == nbt::Type::Byte || t.type == nbt::Type::Short || t.type == nbt::Type::Int) {
+      orient::StateValue v{static_cast<int>(t.i), {}, false};
+      orient::transformState(bs.name, key, v, view.rotation, view.mirror);
+      job.want.push_back({key, {}, v.i, false});
+      job.desc += fmt::format("{}{}={}", job.desc.empty() ? "" : ",", key, v.i);
+      if (key == "upper_block_bit") upper = v.i != 0;
+    } else if (t.type == nbt::Type::String) {
+      orient::StateValue v{0, t.s, true};
+      orient::transformState(bs.name, key, v, view.rotation, view.mirror);
+      job.want.push_back({key, v.s, 0, true});
+      job.desc += fmt::format("{}{}={}", job.desc.empty() ? "" : ",", key, v.s);
+    } else {
+      job.unsupported += (job.unsupported.empty() ? "" : ",") + key;
+      job.desc += fmt::format("{}{}=?", job.desc.empty() ? "" : ",", key);
+    }
+  }
+  return upper;
+}
+
 void queueOrient(const Context &ctx, const Cell &cell, bool upperDone = false) {
   if (!gSetBlock || !gMakeCtx || !gStateByName || !gServerTickOrig.load(std::memory_order_acquire)) return;
   const Structure &st = *ctx.h.structure;
@@ -1199,26 +1252,7 @@ void queueOrient(const Context &ctx, const Cell &cell, bool upperDone = false) {
   const BlockState &bs = st.palette[idx];
   if (bs.states.items.empty()) return;
   OrientJob job{{cell[0], cell[1], cell[2]}, 0, bs.name, {}, {}, {}, 0};
-  bool upper = false;
-  for (size_t i = 0; i < bs.states.items.size() && i < bs.states.keys.size(); ++i) {
-    const nbt::Tag &t = bs.states.items[i];
-    const std::string &key = bs.states.keys[i];
-    if (t.type == nbt::Type::Byte || t.type == nbt::Type::Short || t.type == nbt::Type::Int) {
-      orient::StateValue v{static_cast<int>(t.i), {}, false};
-      orient::transformState(bs.name, key, v, ctx.h.view.rotation, ctx.h.view.mirror);
-      job.want.push_back({key, {}, v.i, false});
-      job.desc += fmt::format("{}{}={}", job.desc.empty() ? "" : ",", key, v.i);
-      if (key == "upper_block_bit") upper = v.i != 0;
-    } else if (t.type == nbt::Type::String) {
-      orient::StateValue v{0, t.s, true};
-      orient::transformState(bs.name, key, v, ctx.h.view.rotation, ctx.h.view.mirror);
-      job.want.push_back({key, v.s, 0, true});
-      job.desc += fmt::format("{}{}={}", job.desc.empty() ? "" : ",", key, v.s);
-    } else {
-      job.unsupported += (job.unsupported.empty() ? "" : ",") + key;
-      job.desc += fmt::format("{}{}=?", job.desc.empty() ? "" : ",", key);
-    }
-  }
+  const bool upper = fillWants(bs, ctx.h.view, job);
   if (hasBlockEntity(shortName(bs.name))) {
     if (nativeFace(ctx, cell) < 0) {
       FacingJob facing;
@@ -1246,6 +1280,139 @@ void queueOrient(const Context &ctx, const Cell &cell, bool upperDone = false) {
   }
 }
 
+
+// Paste: the whole shown structure set straight into the world by the in-process server, like /setblock for every
+// block. Only a local world has that server, and only creative mode may use it. Spread over ticks so the game keeps up.
+struct Paste {
+  hologram::Snapshot h;
+  std::array<int, 3> size{};
+  int64_t next = 0, total = 0;
+  int set = 0, same = 0, failed = 0;
+  bool active = false;
+};
+Paste gPaste;  // server thread only
+constexpr int kPastePerTick = 512;
+
+void pasteOne(void *source, const Cell &cell) {
+  const int32_t idx = expectedAt(*gPaste.h.structure, gPaste.h.origin, gPaste.h.view, cell);
+  if (idx < 0) return;
+  const BlockState &bs = gPaste.h.structure->palette[idx];
+  const void *type = blockTypeOf(bs.name);
+  void *base = type ? const_cast<void *>(defaultBlock(type)) : nullptr;
+  if (!base) {
+    ++gPaste.failed;
+    return;
+  }
+  // The pointer as the type's permutation table holds it (tag byte included), which is what the chunk palette compares.
+  uintptr_t raw = reinterpret_cast<uintptr_t>(base);
+  OrientJob job{};
+  fillWants(bs, gPaste.h.view, job);
+  if (Permutation perm = permutationFor(base, untag(type), job.want, job.unsupported); perm.error.empty()) raw = perm.raw;
+  else if (perm = permutationFor(base, untag(type), {}, {}); perm.error.empty()) raw = perm.raw;
+  const BlockPos pos{cell[0], cell[1], cell[2]};
+  if (reinterpret_cast<uintptr_t>(gGetBlock(source, pos)) == raw) {
+    ++gPaste.same;
+    return;
+  }
+  uintptr_t vtable = 0, slot = 0;
+  if (!readPtr(source, vtable) || !vtable || !readPtr(reinterpret_cast<void *>(vtable + off::BlockSource_vtSetBlock), slot) ||
+      slot != untag(reinterpret_cast<void *>(gSetBlock))) {
+    ++gPaste.failed;
+    return;
+  }
+  const BlockChangeContext ctx = gMakeCtx(0);
+  if (reinterpret_cast<SetBlockFn>(slot)(source, &pos, reinterpret_cast<void *>(raw), 3, nullptr, &ctx)) {
+    ++gPaste.set;
+    hologram::checkPlaced(cell[0], cell[1], cell[2]);
+  } else {
+    ++gPaste.failed;
+  }
+}
+
+void runPaste(void *serverPlayer) {
+  if (gPasteWanted.exchange(false, std::memory_order_acq_rel)) {
+    if (gPaste.active) return say("Paste already running");
+    if (!gSetBlock || !gMakeCtx || !gGetBlock) return say("Paste is not available on this game version");
+    if (!creativeMode(serverPlayer)) return say("Paste needs creative mode");
+    gPaste = {};
+    gPaste.h = hologram::snapshot();
+    if (!gPaste.h.structure) return say("Load a structure first");
+    gPaste.size = viewSize(*gPaste.h.structure, gPaste.h.view);
+    gPaste.total = static_cast<int64_t>(gPaste.size[0]) * gPaste.size[1] * gPaste.size[2];
+    gPaste.active = true;
+    trace("EasyPlace: paste {} cells at {} {} {}", gPaste.total, gPaste.h.origin[0], gPaste.h.origin[1], gPaste.h.origin[2]);
+    say("Pasting...");
+  }
+  if (!gPaste.active) return;
+  const Fields &f = fields(serverPlayer);
+  void *dimension = f.dimension >= 0 ? at<void *>(serverPlayer, f.dimension) : nullptr;
+  void *source = dimension && f.blockSource >= 0 ? at<void *>(dimension, f.blockSource) : nullptr;
+  if (!source) return;
+  const int64_t sx = gPaste.size[0], sz = gPaste.size[2];
+  for (int n = 0; n < kPastePerTick && gPaste.next < gPaste.total; ++n, ++gPaste.next) {
+    // Bottom layer first, so blocks that need support (torches, rails) find it.
+    const int64_t i = gPaste.next;
+    const Cell c{gPaste.h.origin[0] + static_cast<int>(i % sx), gPaste.h.origin[1] + static_cast<int>(i / (sx * sz)),
+                 gPaste.h.origin[2] + static_cast<int>((i / sx) % sz)};
+    pasteOne(source, c);
+  }
+  if (gPaste.next < gPaste.total) return;
+  gPaste.active = false;
+  trace("EasyPlace: paste done: {} set, {} already right, {} failed", gPaste.set, gPaste.same, gPaste.failed);
+  say(gPaste.failed ? fmt::format("Pasted {} blocks, {} failed (unloaded chunks?)", gPaste.set, gPaste.failed)
+                    : fmt::format("Pasted {} blocks", gPaste.set));
+  gPaste.h = {};
+}
+
+// Printer: holding the place button fills the nearest ghost blocks in reach whose block the player holds or has in the
+// hotbar, wherever the crosshair points. Each repeat of the button places one block, so it goes at the game's own pace.
+bool printOne(void *gm, const Context &ctx, uint8_t hand, bool flag) {
+  const Structure &st = *ctx.h.structure;
+  constexpr float kReach = 4.5f;
+  constexpr int r = 5;
+  const Cell center{static_cast<int>(std::floor(ctx.eye.x)), static_cast<int>(std::floor(ctx.eye.y)),
+                    static_cast<int>(std::floor(ctx.eye.z))};
+  const void *held = gHandItem(ctx.player, hand);
+  const bool autoSelect = hand == 0 && gAutoSelect.load(std::memory_order_relaxed);
+  std::unordered_map<int32_t, bool> usable;  // palette index -> held or in the hotbar
+  std::vector<std::pair<float, Cell>> spots;
+  for (int y = -r; y <= r; ++y)
+    for (int z = -r; z <= r; ++z)
+      for (int x = -r; x <= r; ++x) {
+        const Cell c{center[0] + x, center[1] + y, center[2] + z};
+        const float dx = c[0] + 0.5f - ctx.eye.x, dy = c[1] + 0.5f - ctx.eye.y, dz = c[2] + 0.5f - ctx.eye.z;
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 > kReach * kReach) continue;
+        const int32_t idx = expectedAt(st, ctx.h.origin, ctx.h.view, c);
+        if (idx < 0) continue;
+        auto [it, fresh] = usable.try_emplace(idx, false);
+        if (fresh) {
+          const Wanted w = wantedFor(st.palette[idx].name);
+          it->second = w.type && (stackMatches(held, w) || (autoSelect && hotbarSlotWith(ctx.player, w) >= 0));
+        }
+        if (!it->second || !ctx.world.isAir(c) || wantsLiquid(ctx, c)) continue;
+        // The player's own feet and head: a block there would be refused.
+        if (c[0] == center[0] && c[2] == center[2] && (c[1] == center[1] || c[1] == center[1] - 1)) continue;
+        spots.emplace_back(d2, c);
+      }
+  std::sort(spots.begin(), spots.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+  for (size_t i = 0; i < spots.size() && i < 4; ++i) {
+    const Cell &target = spots[i].second;
+    if (!holdingRight(ctx, target, hand)) continue;
+    const bool facing = postFacing(ctx, target);
+    const bool placed = placeAt(gm, ctx.player, ctx.world, target, hand, flag, nativeFace(ctx, target));
+    if (placed) {
+      trace("EasyPlace print: placed at {} {} {}", target[0], target[1], target[2]);
+      hologram::checkPlaced(target[0], target[1], target[2]);
+      queueOrient(ctx, target);
+      afterPlace(ctx, true);
+      return true;
+    }
+    if (facing) dropFacing(target);
+  }
+  return false;
+}
+
 bool buildBlockInner(void *gm, const BlockPos *pos, uint8_t face, uint8_t hand, bool flag);
 
 // Every placement (vanilla or Easy Place) tells the hologram which spot to recheck, so it never polls the world.
@@ -1268,10 +1435,13 @@ bool buildBlockInner(void *gm, const BlockPos *pos, uint8_t face, uint8_t hand, 
     return false;
   }
   Context ctx;
-  if (!gEnabled.load(std::memory_order_relaxed) || !gm || !pos || face > 5 || !context(gm, ctx)) {
+  const bool printing = printerActive();
+  if (!(gEnabled.load(std::memory_order_relaxed) || printing) || !gm || !pos || face > 5 || !context(gm, ctx)) {
     trace("EasyPlace build: pass (enabled={} context={})", gEnabled.load(), gm && pos && face <= 5);
     return orig(gm, pos, face, hand, flag);
   }
+  if (printing && printOne(gm, ctx, hand, flag)) return true;
+  if (!gEnabled.load(std::memory_order_relaxed)) return orig(gm, pos, face, hand, flag);
   trace("EasyPlace build: clicked {} {} {} face {} cam {:.1f} {:.1f} {:.1f} dir {:.2f} {:.2f} {:.2f}", pos->x, pos->y,
         pos->z, face, ctx.eye.x, ctx.eye.y, ctx.eye.z, ctx.dir.x, ctx.dir.y, ctx.dir.z);
 
@@ -1323,10 +1493,13 @@ bool useItemDetour(void *gm, void *stack, uint32_t flag) {
   while (!(orig = gUseOrig.load(std::memory_order_acquire))) std::this_thread::yield();
   if (tInside) return orig(gm, stack, flag);
   Context ctx;
-  if (!gEnabled.load(std::memory_order_relaxed) || !gm || !context(gm, ctx)) {
+  const bool printing = printerActive();
+  if (!(gEnabled.load(std::memory_order_relaxed) || printing) || !gm || !context(gm, ctx)) {
     trace("EasyPlace air: pass (enabled={})", gEnabled.load());
     return orig(gm, stack, flag);
   }
+  if (printing && printOne(gm, ctx, 0, false)) return true;
+  if (!gEnabled.load(std::memory_order_relaxed)) return orig(gm, stack, flag);
   Cell target;
   if (!findTarget(ctx.h, ctx.world, ctx.eye, ctx.dir, nullptr, target)) {
     trace("EasyPlace air: no ghost block within reach (cam {:.1f} {:.1f} {:.1f} dir {:.2f} {:.2f} {:.2f})",
@@ -1538,5 +1711,9 @@ void captureHeldOnce(std::function<void(const std::string &)> done) {
 }
 
 void setAutoSelect(bool on) { gAutoSelect = on; }
+void setPrinter(bool on) { gPrinter = on; }
+void setPrinterOnServers(bool on) { gPrinterServers = on; }
+void paste() { gPasteWanted = true; }
+bool inLocalWorld() { return localWorld(); }
 
 }  // namespace bematica::easyplace

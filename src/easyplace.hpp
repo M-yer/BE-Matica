@@ -24,6 +24,14 @@ void setAirPlace(bool on);
 void setAutoSelect(bool on);
 // The next block tap places nothing: `done` gets the full name of the item in the player's hand instead
 // ("minecraft:cobblestone", or "" for an empty hand). Works whether Easy Place is on or not.
+// Printer: holding the place button fills the nearest ghost blocks in reach that the player holds or has in the hotbar.
+// Runs in singleplayer / a world this device hosts; on other servers only with setPrinterOnServers.
+void setPrinter(bool on);
+void setPrinterOnServers(bool on);
+// Creative, local world only: the in-process server sets every block of the shown structure (like /setblock).
+void paste();
+// True while this device runs the world's server (singleplayer or hosting).
+bool inLocalWorld();
 void captureHeldOnce(std::function<void(const std::string &)> done);
 
 }  // namespace bematica::easyplace

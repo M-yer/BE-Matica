@@ -141,6 +141,8 @@ public:
     }
     easyplace::setAirPlace(airPlaceOn_);
     easyplace::setAutoSelect(autoSelectOn_);
+    easyplace::setPrinter(printerOn_);
+    easyplace::setPrinterOnServers(printerServersOn_);
     {
       std::lock_guard lock(mu_);
       syncPanelLocked();
@@ -235,6 +237,21 @@ private:
       easyplace::setEnabled(easyPlaceOn_);
       saveSettingsLocked();
       syncLayerLocked();
+      return;
+    } else if (key == "printer") {
+      printerOn_ = value == "true" || value == "1";
+      easyplace::setPrinter(printerOn_);
+      saveSettingsLocked();
+      return;
+    } else if (key == "printer_servers") {
+      printerServersOn_ = value == "true" || value == "1";
+      easyplace::setPrinterOnServers(printerServersOn_);
+      saveSettingsLocked();
+      return;
+    } else if (key == "paste") {
+      if (loadedName_.empty()) return panel_.toast("Load a structure first");
+      if (!easyplace::inLocalWorld()) return panel_.toast("Paste works in singleplayer or your own world only");
+      easyplace::paste();
       return;
     } else if (key == "autoselect") {
       autoSelectOn_ = value == "true" || value == "1";
@@ -673,6 +690,21 @@ private:
                       .description = "Select or pick the block a ghost block needs into an empty hotbar slot.",
                       .type = T::Toggle, .defaultValue = "true", .currentValue = autoSelectOn_ ? "true" : "false",
                       .hasCurrentValue = true});
+        schema.node(N{.id = "printer", .key = "printer", .category = "easyplace", .title = "Printer",
+                      .description = "Hold the place button: the nearest ghost blocks in reach get filled with blocks "
+                                     "from your hand or hotbar, wherever you aim. Singleplayer and your own worlds only.",
+                      .type = T::Toggle, .defaultValue = "false", .currentValue = printerOn_ ? "true" : "false",
+                      .hasCurrentValue = true});
+        schema.node(N{.id = "printer_servers", .key = "printer_servers", .category = "easyplace",
+                      .title = "Printer on servers",
+                      .description = "Also run the Printer on servers. Only on servers without anti-cheat, where "
+                                     "printing is allowed: anti-cheat servers can kick or ban you for it.",
+                      .type = T::Toggle, .defaultValue = "false", .currentValue = printerServersOn_ ? "true" : "false",
+                      .hasCurrentValue = true});
+        schema.node(N{.id = "paste", .key = "paste", .category = "easyplace", .title = "Paste structure",
+                      .description = "Creative, singleplayer or your own world: sets every block of the hologram "
+                                     "in the world at once. Cannot be undone.",
+                      .type = T::Button});
         schema.node(N{.id = "easyplace_help", .category = "easyplace", .title = "How it works",
                       .description = "Aim at a ghost block, or through it at the ground behind, and tap to place. "
                                      "Taps outside the hologram place blocks normally.\n"
@@ -768,6 +800,8 @@ private:
       else if (key == "hologram") hologramOn_ = value == "1";
       else if (key == "textured") texturedOn_ = value == "1";
       else if (key == "mcstyle") mcStyleOn_ = value == "1";
+      else if (key == "printer") printerOn_ = value == "1";
+      else if (key == "printer_servers") printerServersOn_ = value == "1";
       else if (key == "outlines") outlinesOn_ = value == "1";
       else if (key == "fill") fillOn_ = value == "1";
       else if (key == "opacity") opacity_ = std::clamp(std::atoi(value.c_str()), 10, 100);
@@ -793,7 +827,7 @@ private:
   }
 
   void saveSettingsLocked() {
-    std::ofstream(settingsFile()) << "easyplace=" << easyPlaceOn_ << "\nairplace=" << airPlaceOn_ << "\nautoselect=" << autoSelectOn_ << "\nhologram=" << hologramOn_ << "\ntextured=" << texturedOn_ << "\nmcstyle=" << mcStyleOn_
+    std::ofstream(settingsFile()) << "easyplace=" << easyPlaceOn_ << "\nairplace=" << airPlaceOn_ << "\nautoselect=" << autoSelectOn_ << "\nhologram=" << hologramOn_ << "\ntextured=" << texturedOn_ << "\nmcstyle=" << mcStyleOn_ << "\nprinter=" << printerOn_ << "\nprinter_servers=" << printerServersOn_
                                   << "\noutlines=" << outlinesOn_ << "\nfill=" << fillOn_ << "\nopacity=" << opacity_ << "\n"
                                   << "structure=" << loadedName_ << "\norigin=" << origin_[0] << ',' << origin_[1] << ','
                                   << origin_[2] << "\nrotation=" << view_.rotation << "\nmirror=" << view_.mirror
@@ -825,7 +859,7 @@ private:
   LookCard waila_;
   bool lookOn_ = true;
   std::string helpLang_ = "auto";  // auto | en | es | pt
-  bool hologramOk_ = false, hologramOn_ = true, texturedOn_ = false, mcStyleOn_ = true, outlinesOn_ = true, fillOn_ = true;
+  bool hologramOk_ = false, hologramOn_ = true, texturedOn_ = false, mcStyleOn_ = true, printerOn_ = false, printerServersOn_ = false, outlinesOn_ = true, fillOn_ = true;
   bool easyPlaceOk_ = false, easyPlaceOn_ = false, airPlaceOn_ = true, autoSelectOn_ = true;
   int opacity_ = 45;
   View view_;
