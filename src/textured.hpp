@@ -40,6 +40,6 @@ bool enabled();
 // Draws the blocks near the camera relative to it. `levelRenderer` holds the block atlas and the ClientInstance.
 // Returns false when it could not draw (pieces missing, texture not found), so the caller can fall back to boxes.
 bool draw(void *screenContext, void *tess, const char *levelRenderer, const char *lrp, const std::vector<BlockCell> &blocks,
-          const Structure &s, const Vec3f &cam);
+          const Structure &s, const View &view, const Vec3f &cam);
 
 }  // namespace bematica::textured

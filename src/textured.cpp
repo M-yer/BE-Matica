@@ -1,6 +1,7 @@
 #include "textured.hpp"
 
 #include "atlas.hpp"
+#include "easyplace.hpp"
 #include "game.hpp"
 #include "glquads.hpp"
 #include "zipfile.hpp"
@@ -124,6 +125,26 @@ const void *blockFor(const std::string &name) {
   const void *block = type ? defaultBlock(type) : nullptr;
   info("BE-Matica: Textured block '%s' -> %s", name.c_str(), block ? "model found" : "not found (drawn as box)");
   cache.emplace(name, block);
+  return block;
+}
+
+bool gUsedFallback = false;  // render thread: a section drew a block without its states and must be rebuilt later
+
+// The block with the structure's states (stairs facing, slab half...), turned with the view. Render thread only.
+const void *blockFor(const BlockState &bs, const View &view) {
+  static std::unordered_map<std::string, const void *> cache;
+  std::string key = bs.name + '|' + std::to_string(view.rotation) + (view.mirror ? "m" : "");
+  for (size_t i = 0; i < bs.states.keys.size() && i < bs.states.items.size(); ++i) {
+    const nbt::Tag &t = bs.states.items[i];
+    key += '|' + bs.states.keys[i] + '=' + (t.type == nbt::Type::String ? t.s : std::to_string(t.i));
+  }
+  if (auto it = cache.find(key); it != cache.end()) return it->second;
+  const void *block = easyplace::blockWithStates(bs, view);
+  if (!block) {  // Easy Place's lookups not installed (yet): default state, not cached
+    gUsedFallback = true;
+    return blockFor(bs.name);
+  }
+  cache.emplace(std::move(key), block);
   return block;
 }
 
@@ -253,16 +274,17 @@ void regroup(const std::vector<BlockCell> &blocks, const Structure &s) {
 }
 
 // Tessellates one section into a retained mesh with positions relative to the section origin.
-void buildSection(Section &sec, void *tess, char *blockTess, const Structure &s) {
+void buildSection(Section &sec, void *tess, char *blockTess, const Structure &s, const View &view) {
   freeMesh(sec);
   sec.built = true;
   sec.hash = sec.wantHash;
+  gUsedFallback = false;
   gBegin(tess, nullptr, QuadList, static_cast<int>(sec.cells.size() * 24), 0);
   float *offset = reinterpret_cast<float *>(static_cast<char *>(tess) + off::Tessellator_postTransformOffset);
   size_t appended = 0;
   for (const BlockCell &b : sec.cells) {
     if (b.palette < 0 || static_cast<size_t>(b.palette) >= s.palette.size()) continue;
-    const void *block = blockFor(s.palette[b.palette].name);
+    const void *block = blockFor(s.palette[b.palette], view);
     if (!block) continue;
     offset[0] = offset[1] = offset[2] = 0.0f;
     char *pb = nullptr, *pe = nullptr;
@@ -284,6 +306,7 @@ void buildSection(Section &sec, void *tess, char *blockTess, const Structure &s)
     sec.mesh = new MeshBuf(gTessEnd(tess, 0, kName, static_cast<int>(sizeof(kName) - 1), 1));
   }
   gTessClear(tess);
+  if (gUsedFallback) sec.hash = 0;  // stale: rebuilt once the states can be looked up
 }
 
 // Top of the world matrix stack (column-major mat4), or null.
@@ -305,7 +328,8 @@ float *worldMatrix(void *screenContext) {
 
 // False when the cached path cannot run this frame (caller uses the near-camera path).
 bool drawCached(void *screenContext, void *tess, char *blockTess, void *material, const void *slot0, void *extra,
-                const std::vector<BlockCell> &blocks, const Structure &s, const Vec3f &cam, size_t &drawnSections) {
+                const std::vector<BlockCell> &blocks, const Structure &s, const View &view, const Vec3f &cam,
+                size_t &drawnSections) {
   drawnSections = 0;
   if (!gTessEnd || !gRenderMeshTex) return false;
   float *matrix = worldMatrix(screenContext);
@@ -325,7 +349,7 @@ bool drawCached(void *screenContext, void *tess, char *blockTess, void *material
     float *offset = reinterpret_cast<float *>(static_cast<char *>(tess) + off::Tessellator_postTransformOffset);
     float savedOffset[3];
     std::memcpy(savedOffset, offset, sizeof(savedOffset));
-    for (size_t i = 0; i < n; ++i) buildSection(*stale[i].second, tess, blockTess, s);
+    for (size_t i = 0; i < n; ++i) buildSection(*stale[i].second, tess, blockTess, s, view);
     std::memcpy(offset, savedOffset, sizeof(savedOffset));
   }
 
@@ -450,7 +474,7 @@ void setEnabled(bool on) {
 bool enabled() { return gEnabled && gReady; }
 
 bool draw(void *screenContext, void *tess, const char *levelRenderer, const char *lrp, const std::vector<BlockCell> &blocks,
-          const Structure &s, const Vec3f &cam) {
+          const Structure &s, const View &view, const Vec3f &cam) {
   (void)lrp;
   if (!enabled()) return false;
   static bool failedLogged = false;
@@ -491,7 +515,7 @@ bool draw(void *screenContext, void *tess, const char *levelRenderer, const char
 
   const auto t0 = std::chrono::steady_clock::now();
   size_t sections = 0;
-  const bool cached = drawCached(screenContext, tess, blockTess, material, slot0, extra, blocks, s, cam, sections);
+  const bool cached = drawCached(screenContext, tess, blockTess, material, slot0, extra, blocks, s, view, cam, sections);
   static int lastCached = -1;
   if (static_cast<int>(cached) != lastCached) {
     lastCached = cached;
@@ -534,7 +558,7 @@ bool draw(void *screenContext, void *tess, const char *levelRenderer, const char
     const float dx = b.x + 0.5f - cam.x, dy = b.y + 0.5f - cam.y, dz = b.z + 0.5f - cam.z;
     if (dx * dx + dy * dy + dz * dz > kRadius * kRadius) continue;
     if (b.palette < 0 || static_cast<size_t>(b.palette) >= s.palette.size()) continue;
-    const void *block = blockFor(s.palette[b.palette].name);
+    const void *block = blockFor(s.palette[b.palette], view);
     if (!block) continue;
     if (inBatch == 0) gBegin(tess, nullptr, QuadList, static_cast<int>(kBatch * 24), 0);
     offset[0] = offset[1] = offset[2] = 0.0f;

@@ -808,6 +808,8 @@ using StateToTagFn = TagOut (*)(void *state, int value);
 // BlockState* by name from the game's registry; nullptr when unknown. Server thread only.
 void *stateByName(const std::string &key) {
   static std::map<std::string, void *> cache;
+  static std::mutex mu;  // the render thread (textured hologram) and the server thread both ask
+  std::lock_guard lock(mu);
   if (!gStateByName) return nullptr;
   if (const auto it = cache.find(key); it != cache.end()) return it->second;
   const HashedString name(key);
@@ -820,6 +822,8 @@ void *stateByName(const std::string &key) {
 // Ordinal of a string state's value: BlockState::toTag(ordinal) (vtable slot 0x10) yields a StringTag (id 8, string at +8).
 bool stringOrdinal(void *state, uint32_t count, const std::string &text, int &out) {
   static std::map<std::pair<void *, std::string>, int> cache;
+  static std::mutex mu;
+  std::lock_guard lock(mu);
   if (const auto it = cache.find({state, text}); it != cache.end()) return (out = it->second) >= 0;
   uintptr_t vt = 0, fn = 0;
   if (!readPtr(state, vt) || !vt || !readPtr(reinterpret_cast<void *>(vt + 0x10), fn) || !fn) return false;
@@ -1811,6 +1815,21 @@ void captureHeldOnce(std::function<void(const std::string &)> done) {
 }
 
 void setAutoSelect(bool on) { gAutoSelect = on; }
+const void *blockWithStates(const BlockState &bs, const View &view) {
+  if (!gLookup || !gRegistry) return nullptr;
+  const void *type = blockTypeOf(bs.name);
+  void *base = type ? const_cast<void *>(defaultBlock(type)) : nullptr;
+  if (!base || bs.states.items.empty() || !gStateByName) return base;
+  OrientJob job{};
+  fillWants(bs, view, job);
+  const Permutation perm = permutationFor(base, untag(type), job.want, job.unsupported);
+  if (!perm.error.empty()) {
+    trace("EasyPlace: hologram {} {} -> default state ({})", shortName(bs.name), job.desc, perm.error);
+    return base;
+  }
+  return reinterpret_cast<const void *>(perm.raw);
+}
+
 void setPrinter(bool on) { gPrinter = on; }
 void setPrinterOnServers(bool on) { gPrinterServers = on; }
 void paste() { gPasteWanted = true; }

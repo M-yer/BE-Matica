@@ -1,5 +1,7 @@
 #pragma once
 
+#include "mesh.hpp"
+
 #include <functional>
 #include <string>
 
@@ -32,6 +34,9 @@ void setPrinterOnServers(bool on);
 void paste();
 // True while this device runs the world's server (singleplayer or hosting).
 bool inLocalWorld();
+// The game's Block for `bs` with its states (turned with `view`), or its default state when those can't be applied;
+// null before Easy Place's hooks are installed or for unknown blocks. Any thread.
+const void *blockWithStates(const BlockState &bs, const View &view);
 void captureHeldOnce(std::function<void(const std::string &)> done);
 
 }  // namespace bematica::easyplace

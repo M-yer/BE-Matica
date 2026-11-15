@@ -689,12 +689,14 @@ void renderLevelDetour(void *self, void *screenContext, void *frameRenderObject)
   // (RenderDragon) this hook has no GL context, so the atlas path never draws there.
   if (!drewTextured && textured::enabled()) {
     std::shared_ptr<const Structure> structure;
+    View view;
     {
       std::lock_guard lock(gMu);
-      structure = gStructure;
+      structure = gStructure, view = gView;
     }
     if (tintColor) tintColor[3] = gAlpha.load(std::memory_order_relaxed);  // see-through real blocks
-    if (structure) drewTextured = textured::draw(screenContext, tess, static_cast<const char *>(self), lrp, mesh->blocks, *structure, cam);
+    if (structure)
+      drewTextured = textured::draw(screenContext, tess, static_cast<const char *>(self), lrp, mesh->blocks, *structure, view, cam);
     if (tintColor) tintColor[3] = 1.0f;
   }
   if (!drewTextured && haveFace && gFill.load(std::memory_order_relaxed)) drawQuads(screenContext, tess, faceMat, *mesh, cam, gAlpha.load(std::memory_order_relaxed));
