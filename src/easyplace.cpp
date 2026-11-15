@@ -689,9 +689,9 @@ bool readPtr(const void *at, uintptr_t &out) {
 }
 
 // BlockType+0x1B0 is the root of a std::map keyed by the BlockState's id (BlockState+8, a small registry index).
-bool findState(uintptr_t type, uint64_t key, StateDesc &out) {
+bool findStateAt(uintptr_t type, unsigned mapOff, uint64_t key, StateDesc &out) {
   uintptr_t node = 0;
-  if (!readPtr(reinterpret_cast<void *>(type + 0x1B0), node)) return false;
+  if (!readPtr(reinterpret_cast<void *>(type + mapOff), node)) return false;
   for (int i = 0; node && i < 64; ++i) {
     uint64_t k = 0;
     if (!safeRead(reinterpret_cast<void *>(node + 0x20), &k, 8)) return false;
@@ -704,6 +704,99 @@ bool findState(uintptr_t type, uint64_t key, StateDesc &out) {
     if (!readPtr(reinterpret_cast<void *>(node + (k < key ? 8 : 0)), node)) return false;
   }
   return false;
+}
+
+// Where Block / BlockType / BlockState keep the fields orientation needs. Seeded with the 1.21 values and checked once
+// against oak stairs on the running game, since game updates move them (1.26 builds were never re-measured).
+struct StateLayout {
+  unsigned perms = off::BlockType_permutations, data = 0x128, stateMap = 0x1B0, stateId = 8, stateHash = 0x18;
+  bool ok = false;
+};
+StateLayout gLayout;
+std::once_flag gLayoutOnce;
+
+bool permTable(uintptr_t type, unsigned o, uintptr_t &begin, size_t &count) {
+  uintptr_t end = 0;
+  if (!readPtr(reinterpret_cast<void *>(type + o), begin) || !readPtr(reinterpret_cast<void *>(type + o + 8), end) ||
+      !begin || end <= begin || (end - begin) % 8 || end - begin > 0x10000 * 8)
+    return false;
+  count = (end - begin) / 8;
+  for (size_t i = 0; i < count && i < 4; ++i) {
+    uintptr_t e = 0, back = 0;
+    if (!readPtr(reinterpret_cast<void *>(begin + i * 8), e) || !e ||
+        !readPtr(reinterpret_cast<void *>(e + off::Block_blockType), back) || back != type)
+      return false;
+  }
+  return true;
+}
+
+bool findState(uintptr_t type, uint64_t key, StateDesc &out) { return findStateAt(type, gLayout.stateMap, key, out); }
+
+void calibrateLayout() {
+  StateLayout &L = gLayout;
+  const auto *typeP = blockTypeOf("minecraft:oak_stairs");
+  const uintptr_t type = untag(typeP);
+  if (!type || !gStateByName) {
+    trace("EasyPlace layout: no oak_stairs type or state lookup, keeping defaults");
+    return;
+  }
+  // Permutation table: a vector of Blocks that all point back at the type; stairs have 8.
+  uintptr_t begin = 0;
+  size_t count = 0;
+  if (!permTable(type, L.perms, begin, count) || count < 2) {
+    bool found = false;
+    for (unsigned o = 0; o < 0x400 && !found; o += 8)
+      if (permTable(type, o, begin, count) && count >= 2) L.perms = o, found = true;
+    if (!found) return trace("EasyPlace layout: permutation table not found");
+  }
+  // Each Block knows its own index in that table (a uint16).
+  const auto dataOk = [&](unsigned d) {
+    for (size_t i = 0; i < count && i < 8; ++i) {
+      uintptr_t e = 0;
+      uint16_t v = 0xFFFF;
+      if (!readPtr(reinterpret_cast<void *>(begin + i * 8), e) || !safeRead(reinterpret_cast<void *>(e + d), &v, 2) || v != i)
+        return false;
+    }
+    return true;
+  };
+  if (!dataOk(L.data)) {
+    bool found = false;
+    for (unsigned d = 0; d < 0x300 && !found; d += 2)
+      if (dataOk(d)) L.data = d, found = true;
+    if (!found) return trace("EasyPlace layout: permutation index in Block not found");
+  }
+  // BlockState: its name hash, its id, and the type's map from id to bit range.
+  const HashedString name("weirdo_direction");
+  const uintptr_t st = untag(gStateByName(name));
+  if (!st) return trace("EasyPlace layout: weirdo_direction state not found");
+  uint64_t h = 0;
+  if (!safeRead(reinterpret_cast<void *>(st + L.stateHash), &h, 8) || h != name.hash) {
+    bool found = false;
+    for (unsigned o = 0; o < 0x80 && !found; o += 8)
+      if (safeRead(reinterpret_cast<void *>(st + o), &h, 8) && h == name.hash) L.stateHash = o, found = true;
+    if (!found) return trace("EasyPlace layout: BlockState name hash not found");
+  }
+  const auto stateOk = [&](unsigned idOff, unsigned mapOff) {
+    uint64_t id = 0;
+    StateDesc d{};
+    return safeRead(reinterpret_cast<void *>(st + idOff), &id, 8) && id < 0x10000 && findStateAt(type, mapOff, id, d) &&
+           d.count == 4;
+  };
+  if (!stateOk(L.stateId, L.stateMap)) {
+    bool found = false;
+    for (unsigned m = 0; m < 0x400 && !found; m += 8)
+      for (unsigned i = 0; i < 0x40 && !found; i += 8)
+        if (stateOk(i, m)) L.stateId = i, L.stateMap = m, found = true;
+    if (!found) return trace("EasyPlace layout: BlockType state map not found");
+  }
+  L.ok = true;
+  trace("EasyPlace layout: perms +{:#x} data +{:#x} stateMap +{:#x} stateId +{:#x} stateHash +{:#x}", L.perms, L.data,
+        L.stateMap, L.stateId, L.stateHash);
+}
+
+const StateLayout &layout() {
+  std::call_once(gLayoutOnce, calibrateLayout);
+  return gLayout;
 }
 
 struct TagOut {  // non-trivial destructor: returned through x8 like the game's unique_ptr<Tag>
@@ -720,7 +813,7 @@ void *stateByName(const std::string &key) {
   const HashedString name(key);
   uintptr_t st = untag(gStateByName(name));
   uint64_t gotHash = 0;
-  if (!st || !safeRead(reinterpret_cast<void *>(st + 0x18), &gotHash, 8) || gotHash != name.hash) return nullptr;
+  if (!st || !safeRead(reinterpret_cast<void *>(st + gLayout.stateHash), &gotHash, 8) || gotHash != name.hash) return nullptr;
   return cache[key] = reinterpret_cast<void *>(st);
 }
 
@@ -750,11 +843,12 @@ struct Permutation {
 
 Permutation permutationFor(void *block, uintptr_t type, const std::vector<OrientJob::Want> &wants, const std::string &unsupported) {
   Permutation out;
+  const StateLayout &L = layout();
   uint16_t data = 0;
   uintptr_t begin = 0, end = 0;
-  if (!safeRead(static_cast<char *>(block) + 0x128, &data, 2) ||
-      !readPtr(reinterpret_cast<void *>(type + off::BlockType_permutations), begin) ||
-      !readPtr(reinterpret_cast<void *>(type + off::BlockType_permutations + 8), end) || end <= begin ||
+  if (!safeRead(static_cast<char *>(block) + L.data, &data, 2) ||
+      !readPtr(reinterpret_cast<void *>(type + L.perms), begin) ||
+      !readPtr(reinterpret_cast<void *>(type + L.perms + 8), end) || end <= begin ||
       end - begin > 0x10000 * 8) {
     out.error = "cannot read the permutation table";
     return out;
@@ -775,7 +869,7 @@ Permutation permutationFor(void *block, uintptr_t type, const std::vector<Orient
     void *state = stateByName(w.key);
     uint64_t id = 0;
     StateDesc d{};
-    if (!state || !safeRead(static_cast<char *>(state) + 8, &id, 8) || !findState(type, id, d)) {
+    if (!state || !safeRead(static_cast<char *>(state) + L.stateId, &id, 8) || !findState(type, id, d)) {
       out.error = fmt::format("unknown state {}", w.key);
       return out;
     }
@@ -1287,7 +1381,7 @@ struct Paste {
   hologram::Snapshot h;
   std::array<int, 3> size{};
   int64_t next = 0, total = 0;
-  int set = 0, same = 0, failed = 0;
+  int set = 0, same = 0, failed = 0, stateErrors = 0;
   bool active = false;
 };
 Paste gPaste;  // server thread only
@@ -1307,8 +1401,13 @@ void pasteOne(void *source, const Cell &cell) {
   uintptr_t raw = reinterpret_cast<uintptr_t>(base);
   OrientJob job{};
   fillWants(bs, gPaste.h.view, job);
-  if (Permutation perm = permutationFor(base, untag(type), job.want, job.unsupported); perm.error.empty()) raw = perm.raw;
-  else if (perm = permutationFor(base, untag(type), {}, {}); perm.error.empty()) raw = perm.raw;
+  if (const Permutation perm = permutationFor(base, untag(type), job.want, job.unsupported); perm.error.empty()) {
+    raw = perm.raw;
+  } else {
+    if (++gPaste.stateErrors <= 20)
+      trace("EasyPlace paste: {} {} -> default state ({})", shortName(bs.name), job.desc, perm.error);
+    if (const Permutation plain = permutationFor(base, untag(type), {}, {}); plain.error.empty()) raw = plain.raw;
+  }
   const BlockPos pos{cell[0], cell[1], cell[2]};
   if (reinterpret_cast<uintptr_t>(gGetBlock(source, pos)) == raw) {
     ++gPaste.same;
@@ -1358,7 +1457,8 @@ void runPaste(void *serverPlayer) {
   }
   if (gPaste.next < gPaste.total) return;
   gPaste.active = false;
-  trace("EasyPlace: paste done: {} set, {} already right, {} failed", gPaste.set, gPaste.same, gPaste.failed);
+  trace("EasyPlace: paste done: {} set, {} already right, {} failed, {} without their states", gPaste.set, gPaste.same,
+        gPaste.failed, gPaste.stateErrors);
   say(gPaste.failed ? fmt::format("Pasted {} blocks, {} failed (unloaded chunks?)", gPaste.set, gPaste.failed)
                     : fmt::format("Pasted {} blocks", gPaste.set));
   gPaste.h = {};
