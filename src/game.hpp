@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 
-// Minecraft internals BE-Matica relies on. Found for Minecraft Bedrock 1.26.60.4 (arm64).
+// Minecraft internals BE-Matica relies on. Found for Minecraft Bedrock 1.26.60.4 and 1.26.66.1 (arm64; every signature matches once in both).
 // Signatures and offsets break on game updates: re-check all of them together.
 namespace bematica::game {
 
@@ -64,8 +64,8 @@ constexpr const char *PickBlock =
     "28 18 40 B9 08 11 00 51 1F 0D 00 31 ? ? ? ? F4 03 02 2A F5 03 01 AA F6 03 00 AA ? ? ? ? A8 1A 40 B9 F3 03 00 AA 1F 05 00 71";
 // ItemStack::ItemStack(const ItemStack&): copy constructor (0x98-byte object, vtable first)
 constexpr const char *ItemStackCopy =
-    "FD 7B BE A9 F3 0B 00 F9 FD 03 00 91 F3 03 00 AA 08 00 00 94 28 B1 01 D0 08 E1 3F 91 68 06 08 F8 E0 03 13 AA F3 0B "
-    "40 F9 FD 7B C2 A8 29 62 E4 17 FF 43 01 D1";
+    "FD 7B BE A9 F3 0B 00 F9 FD 03 00 91 F3 03 00 AA ? ? ? ? ? ? ? ? ? ? ? ? 68 06 08 F8 E0 03 13 AA F3 0B 40 F9 FD "
+    "7B C2 A8 ? ? ? ? FF 43 01 D1";
 // ItemStack::ItemStack(const Block&, int count, const CompoundTag*): constructs in place (0x98 bytes). The bl to the
 // ItemStackBase ctor is kept exact: it is what tells this ctor from its sibling ItemStack ctors.
 constexpr const char *ItemStackFromBlock =
@@ -103,8 +103,7 @@ constexpr const char *BlockSourceSetBlock =
 // BlockState registry lookup: BlockState* f(const HashedString &name), reading the global name -> BlockState map.
 // BlockState+8 is the id that keys BlockType's state map (+0x1B0); BlockState+0x18 is its HashedString name.
 constexpr const char *BlockStateByName =
-    "FD 7B BF A9 FD 03 00 91 E1 03 00 AA C0 AD 01 F0 00 00 32 91 0B 99 00 94 40 00 00 B4 00 1C 40 F9 FD 7B C1 A8 C0 03 "
-    "5F D6";
+    "FD 7B BF A9 FD 03 00 91 E1 03 00 AA ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? 00 1C 40 F9 FD 7B C1 A8 C0 03 5F D6";
 
 // Player-direction placement: BlockType vtable slot 0x280, `const Block* getPlacementBlock(const Actor& by, const BlockPos&,
 // uchar face, const Vec3& click, int itemValue)`, called on the server thread by the block-item placement code.
@@ -116,22 +115,22 @@ constexpr const char *PlacementBase =
 // BarrelBlock's own override (default block + facing from the actor via Direction helpers). Its body is duplicated by
 // another class, so the signature starts in the code before it; PlacementBarrelOffset is the distance to the function.
 constexpr const char *PlacementBarrel =
-    "74 1E 00 12 ? ? ? ? 09 1C 40 92 CA 00 80 52 9F 16 00 71 68 00 80 52 ? ? ? ? ? ? ? ? 29 2D AA 9B 08 81 93 1A 08 1D "
-    "40 92 20 69 68 38 F4 4F 41 A9 FD 7B C2 A8 C0 03 5F D6 FD 7B BE A9 F4 4F 01 A9 FD 03 00 91 F3 03 01 2A 01 A0 4E 39 "
-    "E0 03 02 AA 74 1E 00 12 ? ? ? ? 09 1C 40 92 CA 00 80 52 9F 16 00 71 68 00 80 52 ? ? ? ? ? ? ? ? 29 2D AA 9B 08 81 "
-    "93 1A 08 1D 40 92 20 69 68 38 F4 4F 41 A9 FD 7B C2 A8 C0 03 5F D6 FD 7B BD A9 F5 0B 00 F9 F4 4F 02 A9 FD 03 00 91 "
-    "F4 03 02 AA F5 03 01 AA F3 03 00 AA ? ? ? ? 68 A2 4E 39 60 AE 43 BD F3 03 00 AA E0 03 15 AA E1 03 14 AA ? ? ? ? ? "
-    "? ? ? 74 36 40 F9 ? ? ? ? ? ? ? ? 0A 1C 40 92 ? ? ? ? 63 52 42 79 88 DA 40 F9 22 69 6A 38 61 25 43 F9";
+    "74 1E 00 12 ? ? ? ? 09 1C 40 92 CA 00 80 52 9F 16 00 71 68 00 80 52 ? ? ? ? ? ? ? ? 29 2D AA 9B 08 81 93 1A 08 "
+    "1D 40 92 20 69 68 38 F4 4F 41 A9 FD 7B C2 A8 C0 03 5F D6 FD 7B BE A9 F4 4F 01 A9 FD 03 00 91 F3 03 01 2A 01 A0 "
+    "4E 39 E0 03 02 AA 74 1E 00 12 ? ? ? ? 09 1C 40 92 CA 00 80 52 9F 16 00 71 68 00 80 52 ? ? ? ? ? ? ? ? 29 2D AA "
+    "9B 08 81 93 1A 08 1D 40 92 20 69 68 38 F4 4F 41 A9 FD 7B C2 A8 C0 03 5F D6 FD 7B BD A9 F5 0B 00 F9 F4 4F 02 A9 "
+    "FD 03 00 91 F4 03 02 AA F5 03 01 AA F3 03 00 AA ? ? ? ? ? ? ? ? 60 AE 43 BD F3 03 00 AA E0 03 15 AA E1 03 14 AA "
+    "? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? 0A 1C 40 92 ? ? ? ? ? ? ? ? 88 DA 40 F9 22 69 6A 38";
 constexpr uintptr_t PlacementBarrelOffset = 144;
 // DispenserBlock's override, shared by the dropper.
 constexpr const char *PlacementDispenser =
-    "FD 7B BD A9 F5 0B 00 F9 F4 4F 02 A9 FD 03 00 91 00 E4 00 2F F3 03 00 AA E0 03 01 AA E1 03 02 AA ? ? ? ? F5 03 00 "
-    "2A E0 03 13 AA ? ? ? ? 14 34 40 F9 ? ? ? ? 03 50 42 79 01 C9 46 F9 F3 03 00 AA 89 DA 40 F9 ? ? ? ? 8A C2 06 91 "
-    "0B 01 80 52 E8 03 0A AA 2C 11 40 F9 9F 01 01 EB 6C 31 9F 9A 08 31 89 9A 29 69 6C F8 ? ? ? ? 1F 01 0A EB ? ? ? ? "
-    "09 11 40 F9 3F 00 09 EB ? ? ? ? A2 1E 00 12 E0 03 14 AA ? ? ? ? ? ? ? ? F4 4F 42 A9 F5 0B 40 F9 FD 7B C3 A8 C0 "
-    "03 5F D6 88 CE 04 91 89 D6 44 39 08 01 40 79 08 41 09 2A ? ? ? ? E0 03 14 AA F4 4F 42 A9 F5 0B 40 F9 FD 7B C3 A8 "
-    "? ? ? ? 00 A1 00 91 A2 1E 00 12 E1 03 03 2A 83 A2 07 91 ? ? ? ? ? ? ? ? E0 03 13 AA F4 4F 42 A9 F5 0B 40 F9 FD "
-    "7B C3 A8 C0 03 5F D6 FD 7B BD A9 F5 0B 00 F9";
+    "FD 7B BD A9 F5 0B 00 F9 F4 4F 02 A9 FD 03 00 91 00 E4 00 2F F3 03 00 AA E0 03 01 AA E1 03 02 AA ? ? ? ? F5 03 "
+    "00 2A E0 03 13 AA ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? F3 03 00 AA 89 DA 40 F9 ? ? ? ? ? ? ? ? 0B 01 80 52 "
+    "E8 03 0A AA 2C 11 40 F9 9F 01 01 EB 6C 31 9F 9A 08 31 89 9A 29 69 6C F8 ? ? ? ? 1F 01 0A EB ? ? ? ? ? ? ? ? 3F "
+    "00 09 EB ? ? ? ? A2 1E 00 12 E0 03 14 AA ? ? ? ? ? ? ? ? F4 4F 42 A9 F5 0B 40 F9 FD 7B C3 A8 C0 03 5F D6 88 CE "
+    "04 91 89 D6 44 39 08 01 40 79 08 41 09 2A ? ? ? ? E0 03 14 AA F4 4F 42 A9 F5 0B 40 F9 FD 7B C3 A8 ? ? ? ? ? ? ? "
+    "? A2 1E 00 12 E1 03 03 2A 83 A2 07 91 ? ? ? ? ? ? ? ? E0 03 13 AA F4 4F 42 A9 F5 0B 40 F9 FD 7B C3 A8 C0 03 5F "
+    "D6 FD 7B BD A9 F5 0B 00 F9";
 
 // Textured hologram (experimental)
 // BlockTessellator::BlockTessellator(BlockSource*) — the object is kBlockTessellatorSize bytes

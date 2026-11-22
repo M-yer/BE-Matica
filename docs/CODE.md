@@ -3,7 +3,7 @@
 How the mod is put together, and every place where a block is treated differently on purpose. Keep this file in step
 with the code: when you add a block to one of the lists below, add it here with the reason.
 
-Target: Minecraft Bedrock 1.26.60.4, arm64 Android, loaded by LeviLaunchroid. All game addresses and struct offsets live
+Target: Minecraft Bedrock 1.26.60.4 and 1.26.66.1, arm64 Android, loaded by LeviLaunchroid. All game addresses and struct offsets live
 in `src/game.hpp`; a game update means re-checking every one of them together.
 
 ## Files
